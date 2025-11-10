@@ -545,3 +545,4 @@ By combining rich service descriptions with properly annotated model classes, yo
 - [x] Test and document Claude Desktop integration
 - [x] Test  Cursor AI integration
 - [ ] Implement Notification Context
+- [ ] Support Remote MCP Server standard
