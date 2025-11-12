@@ -2,9 +2,9 @@
 
 ## Overview
 
-The Decision MCP Server bridges IBM ODM with modern AI assistants and orchestration platforms.  
+The IBM ODM Decision MCP Server bridges IBM ODM with modern AI assistants and orchestration platforms.  
 It enables you to:
-- Expose decision services as tools for AI assistants
+- Expose decisions as tools for AI assistants
 - Automate decisions dynamically in workflows
 - Integrate easily with Watson Orchestrate, Claude Desktop, and Cursor AI
 - Centralize and expose business logic to end users and bots
@@ -13,7 +13,7 @@ It enables you to:
 
 ## Features
 
-- **Tool Integration:** Add and invoke ODM decision services as tools
+- **Tool Integration:** Add and invoke ODM decisions (aka rulesets) as tools
 - **Decision Storage:** Manage resources with a local storage system
 - **Authentication:** Zen API Key, Basic Auth, and OpenID Connect
 - **Multi-Platform:** Works with Watson Orchestrate, Claude Desktop, and Cursor AI
@@ -28,7 +28,7 @@ For detailed instructions on setting up and using Claude Desktop with the Decisi
 
 Watch our demo video to see Claude Desktop integration in action:
 
-[![](https://github.com/user-attachments/assets/3fce0475-e2a3-491f-9f88-9ae71f52d410)](https://raw.githubusercontent.com/DecisionsDev/decision-mcp-server/refs/heads/feature/rename_dc_project/docs/Claude.mp4)
+![](https://github.com/user-attachments/assets/3fce0475-e2a3-491f-9f88-9ae71f52d410)
 
 
 ## IBM Watsonx Orchestrate Integration
