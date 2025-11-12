@@ -59,7 +59,7 @@ You need a running instance of both:
 - Enter an **Install command**
    > Note 1:
    >  - This *Install command* starts the Decision MCP Server
-   >  - it begins with `uvx --from git+https://github.com/DecisionsDev/decision-mcp-server.git decision-mcp-server`
+   >  - it begins with `uvx --from git+https://github.com/DecisionsDev/ibm-odm-decision-mcp-server.git ibm-odm-decision-mcp-server`
    >    followed by :
    >    - `--url <RES_URL>` (where RES_URL is the URL of the ODM RES console where the rulesets to be used as tools are deployed)
    >    - authentication arguments to connect to the ODM RES console (either using basic auth, OpenId, or Zen Api Key)

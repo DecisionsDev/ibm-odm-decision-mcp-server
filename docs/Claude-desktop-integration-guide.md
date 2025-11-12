@@ -20,7 +20,7 @@
     - in Powershell, run the command described in [installing uv](https://docs.astral.sh/uv/getting-started/installation/)
     - once `uv` is installed, open a new Powershell window/tab, and run the command below:
       ```powershell
-      uvx --from git+https://github.com/DecisionsDev/decision-mcp-server decision-mcp-server
+      uvx --from git+https://github.com/DecisionsDev/ibm-odm-decision-mcp-server ibm-odm-decision-mcp-server
       ``` 
     - wait for `uvx` to complete downloading all the Python packages required by Decision MCP server
     - you can then safely stop the `uvx` command line
@@ -99,8 +99,8 @@ If you want to use a local ODM instance for development or testing,
 
 - clone this repository,
 ```bash
-  git clone https://github.com/DecisionsDev/decision-mcp-server.git
-  cd decision-mcp-server
+  git clone https://github.com/DecisionsDev/ibm-odm-decision-mcp-server.git
+  cd ibm-odm-decision-mcp-server
  ```
 - and run:
 
@@ -132,20 +132,23 @@ This ODM instance will be available for the MCP Server, pre-populated with sampl
    - On macOS, click the Claude menu in the top menu bar and select **Settings**.
    - On Windows, access **Settings** from the Claude application.
 
-2. Navigate to the **Developer** tab and click **Edit Config**:
+1. Navigate to the **Developer** tab and click **Edit Config**:
+![Screenshot showing Claude tools](images/claude-setting-developer.png)
+
+1. This opens a window allowing you to open the configuration file:
    - macOS: `~/Library/Application Support/Claude/claude_desktop_config.json`
    - Windows: `%APPDATA%\Claude\claude_desktop_config.json`
 
-3. Add the following configuration:
+1. Edit the configuration file and add the following configuration:
    ```json
    {
      "mcpServers": {
-       "decision-mcp-server": {
+       "ibm-odm-decision-mcp-server": {
          "command": "uvx",
          "args": [
            "--from",
-           "git+https://github.com/DecisionsDev/decision-mcp-server",
-           "decision-mcp-server",
+           "git+https://github.com/DecisionsDev/ibm-odm-decision-mcp-server",
+           "ibm-odm-decision-mcp-server",
            "--url",
            "http://localhost:9060/res",
            "--username", "odmAdmin"
@@ -157,8 +160,7 @@ This ODM instance will be available for the MCP Server, pre-populated with sampl
      }
    }
    ```
-
-4. Restart Claude Desktop:
+1. Restart Claude Desktop:
 
     Simply closing the window is not enough, Claude Desktop must be stopped and restarted:
     - on macOS: Claude > Quit
@@ -182,10 +184,10 @@ Once Claude Desktop is configured with the MCP Server, it automatically connects
 
 ✅ To see all the tools listed in Claude Desktop, proceed as follows:
 - first click the settings icon, and you should see:
-![Screenshot showing Claude tools](claude-mcp-tools.png)
+![Screenshot showing Claude tools](images/claude-mcp-tools.png)
 
-- then click `decision-mcp-server`, and you should see:
-![Screenshot showing Claude tools](claude-mcp-tools-details.png)
+- then click `ibm-odm-decision-mcp-server`, and you should see:
+![Screenshot showing Claude tools](images/claude-mcp-tools-details.png)
 
 #### 2. User Starts a Conversation
 
