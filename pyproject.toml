@@ -25,3 +25,5 @@ dev = [
 
 [project.scripts]
 decision-mcp-server = "decision_mcp_server:main"
+ibm-odm-decision-mcp-server = "decision_mcp_server:main"
+start = "decision_mcp_server:main"

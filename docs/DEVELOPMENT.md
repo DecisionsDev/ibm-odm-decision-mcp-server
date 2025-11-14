@@ -1,7 +1,7 @@
 
-# Development Guide for decision-mcp-server
+# Development Guide for ibm-odm-decision-mcp-server
 
-This document contains instructions for building, publishing, and debugging the decision-mcp-server MCP server.
+This document contains instructions for building, publishing, and debugging the ibm-odm-decision-mcp-server MCP server.
 
 ## Prerequisite
 
@@ -27,13 +27,13 @@ You can find a ruleapp in the directory  [samples/samples-ruleapp.jar](/samples/
 
 git clone the repository
 ```bash
-git clone git@github.com:DecisionsDev/decision-mcp-server.git
+git clone git@github.com:DecisionsDev/ibm-odm-decision-mcp-server.git
 ```
 
 or
 
 ```bash
-git clone https://github.com/DecisionsDev/decision-mcp-server.git
+git clone https://github.com/DecisionsDev/ibm-odm-decision-mcp-server.git
 ```
 
 Then you can run the MCP server as show in the next section Debugging.
@@ -46,7 +46,7 @@ Since MCP servers run over stdio, debugging can be challenging. For the best deb
 You can launch the MCP Inspector via [`npm`](https://docs.npmjs.com/downloading-and-installing-node-js-and-npm) with this command:
 
 ```bash
-npx @modelcontextprotocol/inspector uv run decision-mcp-server
+npx @modelcontextprotocol/inspector uv run ibm-odm-decision-mcp-server
 ```
 
 Upon launching, the Inspector will display a URL that you can access in your browser to begin debugging.

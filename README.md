@@ -1,10 +1,10 @@
-# Decision MCP Server Documentation
+# IBM ODM Decision MCP Server Documentation
 
 ## Overview
 
-The Decision MCP Server bridges IBM ODM with modern AI assistants and orchestration platforms.  
+The IBM ODM Decision MCP Server bridges IBM ODM with modern AI assistants and orchestration platforms.  
 It enables you to:
-- Expose decision services as tools for AI assistants
+- Expose decisions as tools for AI assistants
 - Automate decisions dynamically in workflows
 - Integrate easily with Watson Orchestrate, Claude Desktop, and Cursor AI
 - Centralize and expose business logic to end users and bots
@@ -13,7 +13,7 @@ It enables you to:
 
 ## Features
 
-- **Tool Integration:** Add and invoke ODM decision services as tools
+- **Tool Integration:** Add and invoke ODM decisions (aka rulesets) as tools
 - **Decision Storage:** Manage resources with a local storage system
 - **Authentication:** Zen API Key, Basic Auth, and OpenID Connect
 - **Multi-Platform:** Works with Watson Orchestrate, Claude Desktop, and Cursor AI
@@ -28,7 +28,7 @@ For detailed instructions on setting up and using Claude Desktop with the Decisi
 
 Watch our demo video to see Claude Desktop integration in action:
 
-[![](https://github.com/user-attachments/assets/3fce0475-e2a3-491f-9f88-9ae71f52d410)](https://raw.githubusercontent.com/DecisionsDev/decision-mcp-server/refs/heads/feature/rename_dc_project/docs/Claude.mp4)
+![](https://github.com/user-attachments/assets/3fce0475-e2a3-491f-9f88-9ae71f52d410)
 
 
 ## IBM Watsonx Orchestrate Integration
@@ -73,7 +73,7 @@ For more installation options, see the [uv documentation](https://docs.astral.sh
 Once `uv` is installed, you can run the Decision MCP Server directly without manual installation:
 
 ```bash
-uvx --from git+https://github.com/DecisionsDev/decision-mcp-server decision-mcp-server --url http://localhost:9060/res
+uvx --from git+https://github.com/DecisionsDev/ibm-odm-decision-mcp-server start --url http://localhost:9060/res
 ```
 
 The `uvx` command automatically:
@@ -246,12 +246,12 @@ The example below shows a typical use-case where the sensitive information (here
 ```json
 {
   "mcpServers": {
-    "decision-mcp-server": {
+    "ibm-odm-decision-mcp-server": {
       "command": "uvx",
       "args": [
         "--from",
-        "git+https://github.com/DecisionsDev/decision-mcp-server",
-        "decision-mcp-server",
+        "git+https://github.com/DecisionsDev/ibm-odm-decision-mcp-server",
+        "start",
         "--url", "https://odm-res-console-url",
         "--ssl-cert-path", "certificate-file",
         "--username", "your-username"
@@ -274,8 +274,8 @@ For local development and testing, use the Basic Auth.
 ```json
 "args": [
   "--from",
-  "git+https://github.com/DecisionsDev/decision-mcp-server",
-  "decision-mcp-server",
+  "git+https://github.com/DecisionsDev/ibm-odm-decision-mcp-server",
+  "start",
   "--url", "http://localhost:9060/res",
   "--username", "odmAdmin"
 ],
@@ -292,8 +292,8 @@ For production deployments on the Cloud Pak, use the Zen API Key.
 ```json
 "args": [
   "--from",
-  "git+https://github.com/DecisionsDev/decision-mcp-server",
-  "decision-mcp-server",
+  "git+https://github.com/DecisionsDev/ibm-odm-decision-mcp-server",
+  "start",
   "--url",           "https://odm-res-console-url",
   "--ssl-cert-path", "certificate-file",
   "--username",      "YOUR_ZENUSERNAME"
@@ -316,8 +316,8 @@ Two authentication variants are possible:
 ```json
 "args": [
   "--from",
-  "git+https://github.com/DecisionsDev/decision-mcp-server",
-  "decision-mcp-server",
+  "git+https://github.com/DecisionsDev/ibm-odm-decision-mcp-server",
+  "start",
   "--url",           "https://odm-res-console-url",
   "--runtime-url",   "https://odm-runtime-url",
   "--ssl-cert-path", "certificate-file",
@@ -334,8 +334,8 @@ Two authentication variants are possible:
 ```json
 "args": [
   "--from",
-  "git+https://github.com/DecisionsDev/decision-mcp-server",
-  "decision-mcp-server",
+  "git+https://github.com/DecisionsDev/ibm-odm-decision-mcp-server",
+  "start",
   "--url",           "https://odm-res-console-url",
   "--runtime-url",   "https://odm-runtime-url",
   "--ssl-cert-path", "certificate-file",
@@ -359,8 +359,8 @@ When authorization is required (to assess the right to access to the service (RE
 ```json
 "args": [
   "--from",
-  "git+https://github.com/DecisionsDev/decision-mcp-server",
-  "decision-mcp-server",
+  "git+https://github.com/DecisionsDev/ibm-odm-decision-mcp-server",
+  "start",
   "--url",           "https://odm-res-console-url",
   "--runtime-url",   "https://odm-runtime-url",
   "--ssl-cert-path", "certificate-file",
@@ -383,8 +383,8 @@ The example below shows how to configure the Decision MCP Server when:
 ```json
 "args": [
   "--from",
-  "git+https://github.com/DecisionsDev/decision-mcp-server",
-  "decision-mcp-server",
+  "git+https://github.com/DecisionsDev/ibm-odm-decision-mcp-server",
+  "start",
   "--url",           "https://odm-res-console-url",
   "--runtime-url",   "https://odm-runtime-url",
   "--ssl-cert-path", "certificate-file",
