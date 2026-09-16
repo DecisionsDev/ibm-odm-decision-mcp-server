@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
 set -e
-[ "${LOG_LEVEL}" = "DEBUG" ] && set -x
 
 AUTHOIDC_DIR="${AUTHOIDC_DIR:-/authOidc}"
 XML_FILE="${AUTHOIDC_DIR}/openIdWebSecurity.xml"
