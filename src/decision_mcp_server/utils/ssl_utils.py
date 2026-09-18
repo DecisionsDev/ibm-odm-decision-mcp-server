@@ -99,7 +99,7 @@ def merge_ssl_cert_paths(ssl_cert_path: str) -> str:
                 )
                 raise e
             merged.append(path)
-        logger.debug(
+        logger.info(
             "ssl-cert-path: concatenated %s into %s",
             ", ".join(merged),
             tmp.name,
