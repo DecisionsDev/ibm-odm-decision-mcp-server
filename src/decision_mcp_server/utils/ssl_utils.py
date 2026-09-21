@@ -12,42 +12,96 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import ssl
-import socket
-import certifi
-import OpenSSL
-from urllib.parse import urlparse
+import os
+import re
+import tempfile
 
-def extract_certificate_from_url(url: str, output_path: str = None) -> str:
-    """
-    Extract SSL certificate from a URL and optionally save it to a PEM file
-    
+def merge_ssl_cert_paths(ssl_cert_path: str) -> str:
+    """Return a path to a single CA-bundle PEM file.
+
+    If *ssl_cert_path* contains multiple paths separated by ``,`` or
+    ``;``, the files are concatenated into a new temporary file and the
+    path of that temporary file is returned.  When only a single path is
+    given the original value is returned unchanged.
+
+    Directory entries are expanded to all ``*.pem`` and ``*.crt`` files they
+    contain (sorted alphabetically).  Non-existent paths raise a
+    FileNotFoundError.
+
     Args:
-        url (str): The HTTPS URL to extract the certificate from
-        output_path (str, optional): Path to save the PEM file. If None, returns the PEM content as string
-        
-    Returns:
-        str: PEM certificate content
-    """
-    # Parse URL to get hostname
-    parsed_url = urlparse(url)
-    hostname = parsed_url.hostname
-    port = parsed_url.port or 443
+        ssl_cert_path: One or more PEM/CRT file or directory paths, separated
+            by ``,`` or ``;``.
 
-    # Create SSL context using system's trusted certificates
-    context = ssl.create_default_context(cafile=certifi.where())
-    
+    Returns:
+        A file path suitable for use as a CA bundle.
+    """
+    import logging
+    logger = logging.getLogger(__name__)
+
+    # Split on commas or semicolons, stripping whitespace around each entry.
+    raw_paths = [p.strip() for p in re.split(r'[,;]+', ssl_cert_path) if p.strip()]
+
+    # Expand directory entries to the sorted list of *.pem / *.crt files they contain.
+    paths: list[str] = []
+    for path in raw_paths:
+        if os.path.isdir(path):
+            cert_files = sorted(
+                os.path.join(path, f)
+                for f in os.listdir(path)
+                if (f.endswith('.pem') or f.endswith('.crt')) and os.path.isfile(os.path.join(path, f))
+            )
+            paths.extend(cert_files)
+        elif os.path.isfile(path):
+            paths.append(path)
+        else:
+            err = FileNotFoundError(f"No such file or directory: '{path}'")
+            logger.error("ssl-cert-path: path %s not found, stopping", path)
+            raise err
+
+    if len(paths) <= 1:
+        # Single path — no temp file required - return as-is (with any leading or ending space characters removed)
+        return paths[0] if paths else ssl_cert_path
+
+    # Multiple paths: concatenate into a NamedTemporaryFile that persists until
+    # the process exits (delete=False).
     try:
-        with socket.create_connection((hostname, port)) as sock:
-            with context.wrap_socket(sock, server_hostname=hostname) as ssock:
-                cert_bin = ssock.getpeercert(binary_form=True)
-                x509 = OpenSSL.crypto.load_certificate(OpenSSL.crypto.FILETYPE_ASN1, cert_bin)
-                pem_data = OpenSSL.crypto.dump_certificate(OpenSSL.crypto.FILETYPE_PEM, x509).decode('utf-8')
-                
-                if output_path:
-                    with open(output_path, 'w') as f:
-                        f.write(pem_data)
-                
-                return pem_data
-    except Exception as e:
-        raise Exception(f"Failed to extract certificate from {url}: {str(e)}")
+        tmp = tempfile.NamedTemporaryFile(
+            mode='w',
+            suffix='.pem',
+            delete=False,
+            prefix='odm_merged_ca_',
+        )
+    except OSError as e:
+        logger.error(
+            "ssl-cert-path: could not create temporary file (%s), stopping. Set TMPDIR env to mitigate",
+            e,
+        )
+        raise e
+
+    with tmp:
+        merged = []
+        for path in paths:
+            try:
+                with open(path, 'r') as f:
+                    content = f.read()
+            except FileNotFoundError as e:
+                logger.error("ssl-cert-path: file %s not found, stopping", path)
+                raise e
+            # Ensure each certificate block ends with a newline before the next.
+            if not content.endswith('\n'):
+                content += '\n'
+            try:
+                tmp.write(content)
+            except OSError as e:
+                logger.error(
+                    "ssl-cert-path: could not write to temporary file (%s), stopping. Set TMPDIR env to mitigate",
+                    e,
+                )
+                raise e
+            merged.append(path)
+        logger.info(
+            "ssl-cert-path: concatenated %s into %s",
+            ", ".join(merged),
+            tmp.name,
+        )
+        return tmp.name

@@ -27,6 +27,7 @@ from decision_mcp_server.Credentials import Credentials
 from decision_mcp_server.DecisionServerManager import DecisionServerManager
 from decision_mcp_server.config import INSTRUCTIONS, BASE_DIR
 from decision_mcp_server.ExecutionToolTrace import ExecutionToolTrace, DiskTraceStorage
+from decision_mcp_server.utils.ssl_utils import merge_ssl_cert_paths
 import argparse
 import os
 import sys
@@ -246,7 +247,7 @@ def parse_arguments():
     parser.add_argument("--scope",                                      type=str, default=os.getenv("SCOPE", "openid"), help="OpenID Connect scope using when requesting an access token using Client Credentials (optional)")
     parser.add_argument("--verifyssl",          "--verify-ssl",         type=str, default=os.getenv("VERIFY_SSL", "True"), choices=["True", "False"], help="Enable SSL check. Default is True (SSL verification enabled (to check that the server certificate is valid and trusted)).")
     parser.add_argument("--verifyssl-hostname", "--verify-ssl-hostname",type=str, default=os.getenv("VERIFY_SSL_HOSTNAME", "False"), choices=["True", "False"], help="Enable TLS hostname verification. Default is False (TLS hostname verification disabled for compatibility). The TLS hostname verification ensures the MCP server connects to the intended server, not a malicious interceptor by checking if the domain name in the requested URL exactly matches the Common Name (CN) or Subject Alternative Name (SAN) fields in the server’s digital certificate.")
-    parser.add_argument("--ssl-cert-path",      "--ssl_cert_path",      type=str, default=os.getenv("SSL_CERT_PATH"), help="Path to the SSL certificate file. If not provided, defaults to system certificates.")
+    parser.add_argument("--ssl-cert-path",      "--ssl_cert_path",      type=str, default=os.getenv("SSL_CERT_PATH"), help="Semi-colon or comma-separated list of paths (files or directories) containing trusted SSL certificates. When a directory is specified, only the files with *.pem or *.crt extension are taken into account. If not provided, defaults to the system certificates.")
     parser.add_argument("--pkjwt-cert-path",    "--pkjwt_cert_path",    type=str, default=os.getenv("PKJWT_CERT_PATH"), help="Path to the certificate for PKJWT authentication (mandatory for PKJWT).")
     parser.add_argument("--pkjwt-key-path",     "--pkjwt_key_path",     type=str, default=os.getenv("PKJWT_KEY_PATH"),  help="Path to the private key for PKJWT authentication (mandatory for PKJWT).")
     parser.add_argument("--pkjwt-key-password", "--pkjwt_key_password", type=str, default=os.getenv("PKJWT_KEY_PASSWORD"), help="Password to decrypt the private key for PKJWT authentication. Only needed if the key is password-protected.")
@@ -342,6 +343,10 @@ def create_credentials(args):
         # replace 'res' with 'DecisionService'
         if odm_url_runtime.endswith('res'):
             odm_url_runtime=odm_url_runtime[:-3] + 'DecisionService'
+
+    # Resolve a comma/semicolon-separated list of cert paths into a single file
+    if args.ssl_cert_path:
+        args.ssl_cert_path = merge_ssl_cert_paths(args.ssl_cert_path)
 
     console_credentials = create_credentials(args, args.console_auth_type, args.url)
     runtime_credentials = create_credentials(args, args.runtime_auth_type, odm_url_runtime)

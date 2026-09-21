@@ -191,10 +191,14 @@ When establishing a SSL/TLS secure connection, the Decision MCP server can perfo
     - this check requires that:
       - either the server certificate was signed with a public CA certificate available in the system trusted certificates
       - or this signing certificate is provided to the MCP server using:
-        - **CLI:** `--ssl-cert-path <certificate_filename>`
-        - **Env:** `SSL_CERT_PATH=<certificate_filename>`
+        - **CLI:** `--ssl-cert-path <certificate_path_list>`
+        - **Env:** `SSL_CERT_PATH=<certificate_path_list>`
       - use this latter option to solve the error `certificate verify failed: self-signed certificate in certificate chain`
-      - if needed you can concat several certificates in the same file 
+      - if several certificates need to be trusted:
+        - either concatenate all the certificates in the same file,
+        - or specify a list of paths separated by a semi-colon or a comma,
+          - each path being either a certificate file
+          - or a directory in which case, all the files with the extension *.pem or *.crt are taken into account
 
 1. verify that the MCP server connects to the intended server and not a malicious interceptor by checking that the Common Name (CN) or Subject Alternative Name (SAN) fields in the server certificate matches the domain name in the requested URL
     - this check is disabled by default (for compatibility)
@@ -234,7 +238,7 @@ The parameters below can be specified:
 | `--scope`         | `SCOPE`             | OpenID Connect scope used when requesting an access token using Client Credentials for authentication   | `openid`                                |
 | `--verifyssl`     | `VERIFY_SSL`        | Whether to verify SSL certificates are valid and trusted (`True` or `False`)                            | `True`                                  |
 | `--verifyssl-hostname` | `VERIFY_SSL_HOSTNAME` | Whether to verify that the MCP server is connecting to the intended server by checking that the Common Name (CN) or Subject Alternative Name (SAN) fields of the server certificate matches the domain name in the requested URL  (`True` or `False`) | `False`                                  |
-| `--ssl-cert-path` | `SSL_CERT_PATH`     | Path to the SSL certificate file. If not provided, defaults to system certificates.                     |                                         |
+| `--ssl-cert-path` | `SSL_CERT_PATH`     | Semi-colon or comma-separated list of paths (files or directories) containing trusted SSL certificates. When a directory is specified, only the files with *.pem or *.crt extension are taken into account. If not provided, defaults to the system certificates. |                                         |
 | `--mtls-cert-path`| `MTLS_CERT_PATH`    | Path to the SSL certificate file of the client for mutual TLS authentication (mandatory for mTLS)       |                                         |
 | `--mtls-key-path` | `MTLS_KEY_PATH`     | Path to the SSL private key file of the client for mutual TLS authentication (mandatory for mTLS)       |                                         |
 | `--mtls-key-password` | `MTLS_KEY_PASSWORD` | Password to decrypt the private key of the client for mutual TLS authentication. Only needed if the key is password-protected. |              |
@@ -276,7 +280,7 @@ The example below shows a typical use-case where the sensitive information (here
         "start",
         "--url", "https://odm-res-console-url",
         "--verifyssl-hostname", "True",
-        "--ssl-cert-path", "certificate-file",
+        "--ssl-cert-path", "certificate-path",
         "--username", "your-username"
       ],
       "env": {
@@ -319,7 +323,7 @@ For production deployments on the Cloud Pak, use the Zen API Key.
   "start",
   "--url",           "https://odm-res-console-url",
   "--verifyssl-hostname", "True",
-  "--ssl-cert-path", "certificate-file",
+  "--ssl-cert-path", "certificate-path",
   "--username",      "YOUR_ZENUSERNAME"
 ],
 "env": {
@@ -345,7 +349,7 @@ Two authentication variants are possible:
   "--url",           "https://odm-res-console-url",
   "--runtime-url",   "https://odm-runtime-url",
   "--verifyssl-hostname", "True",
-  "--ssl-cert-path", "certificate-file",
+  "--ssl-cert-path", "odm-certificate-file;openid-provider-certificate-file",
   "--token-url",     "https://your-openid-connect_provider-token-endpoint-url",
   "--scope",         "the_scope_to_be_used_for_client_credentials"
 ],
@@ -364,7 +368,7 @@ Two authentication variants are possible:
   "--url",           "https://odm-res-console-url",
   "--runtime-url",   "https://odm-runtime-url",
   "--verifyssl-hostname", "True",
-  "--ssl-cert-path", "certificate-file",
+  "--ssl-cert-path", "odm-certificate-file;openid-provider-certificate-file",
   "--token-url",     "https://your-openid-connect_provider-token-endpoint-url",
   "--scope",         "the_scope_to_be_used_for_client_credentials"
 ],
@@ -390,7 +394,7 @@ When authorization is required (to assess the right to access to the service (RE
   "--url",           "https://odm-res-console-url",
   "--runtime-url",   "https://odm-runtime-url",
   "--verifyssl-hostname", "True",
-  "--ssl-cert-path", "certificate-file",
+  "--ssl-cert-path", "certificate-path",
   "--username",      "SERVICE_ACCOUNT"
 ],
 "env": {
@@ -415,7 +419,7 @@ The example below shows how to configure the Decision MCP Server when:
   "--url",           "https://odm-res-console-url",
   "--runtime-url",   "https://odm-runtime-url",
   "--verifyssl-hostname", "True",
-  "--ssl-cert-path", "certificate-file",
+  "--ssl-cert-path", "odm-certificate-file;openid-provider-certificate-file",
 
   "--console-auth-type", "PKJWT",
   "--token-url",         "https://your-openid-connect_provider-token-endpoint-url",

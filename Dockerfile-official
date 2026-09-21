@@ -1,5 +1,6 @@
-FROM registry.access.redhat.com/ubi9-minimal AS builder
+FROM registry.access.redhat.com/ubi10-minimal AS builder
 ARG PYTHON_VERSION=3.14
+ARG TRUSTSTORE_PWD
 ENV UV_COMPILE_BYTECODE=1
 ENV UV_LINK_MODE=copy
 ENV UV_PYTHON_INSTALL_DIR=/python
@@ -11,11 +12,26 @@ ADD https://astral.sh/uv/install.sh /uv-installer.sh
 # required packages:
 # - tar gzip                for uv-installer
 # - python3-cryptography    cryptography python library (not available as binary on s390x otherwise)
+# - java-21-openjdk-headless  for keytool (truststore certificate extraction)
 RUN set -ex; \
     microdnf -y upgrade --disableplugin=subscription-manager --setopt=install_weak_deps=0; \
-    microdnf -y install tar gzip python3-cryptography; \
+    microdnf -y install tar gzip python3-cryptography java-21-openjdk-headless; \
     sh /uv-installer.sh; \
     uv python install ${PYTHON_VERSION}
+
+# Download the ODM truststore and extract each certificate as a PEM file,
+# then concatenate them all into a single tls.crt bundle
+RUN set -ex; \
+    curl -fsSL https://github.com/DecisionsDev/odm-ondocker/raw/refs/heads/master/common/security/truststore.jks \
+        -o /tmp/truststore.jks; \
+    mkdir -p /mcp-certs/trusted-odm; \
+    for alias in $(keytool -list -keystore /tmp/truststore.jks -storepass "${TRUSTSTORE_PWD}" -noprompt \
+            | awk -F',' '/trustedCertEntry/{print $1}' | tr -d ' '); do \
+        keytool -exportcert -keystore /tmp/truststore.jks -storepass "${TRUSTSTORE_PWD}" \
+            -alias "${alias}" -rfc -noprompt \
+            -file "/mcp-certs/trusted-odm/${alias}.pem"; \
+    done; \
+    cat /mcp-certs/trusted-odm/*.pem > /mcp-certs/trusted-odm/tls.crt
 
 WORKDIR /app
 RUN --mount=type=cache,target=/root/.cache/uv \
@@ -28,7 +44,7 @@ RUN --mount=type=cache,target=/root/.cache/uv \
         $( [ "$(uname -m)" = "s390x" ] && echo "--extra s390x --no-install-package cryptography" )
 
 
-FROM registry.access.redhat.com/ubi9-minimal
+FROM registry.access.redhat.com/ubi10-minimal
 ARG VERSION
 LABEL org.opencontainers.image.authors="Laurent GRATEAU <laurent.grateau@fr.ibm.com>"
 LABEL name="IBM ODM Decision MCP Server"
@@ -47,19 +63,19 @@ USER root
 
 RUN set -ex; \
     microdnf -y upgrade --disableplugin=subscription-manager --setopt=install_weak_deps=0; \
-    microdnf install -y crypto-policies crypto-policies-scripts openssl ; \
-    microdnf clean all --disableplugin=subscription-manager; \
-    rm -rf /var/cache/yum; \
+    microdnf install -y crypto-policies crypto-policies-scripts openssl shadow-utils; \
     groupadd --system --gid 501 mcp; \
     useradd  --system --uid 501 --gid 501 --shell /sbin/nologin mcp; \
-    fips-mode-setup --enable; \
-    echo "# FIPS module installation complete" >/etc/system-fips; 
+    microdnf remove -y shadow-utils; \
+    microdnf clean all --disableplugin=subscription-manager; \
+    rm -rf /var/cache/yum;
 
 USER 501
 
 WORKDIR /app
 COPY --from=builder --chown=501:501 /python /python
 COPY --from=builder --chown=501:501 /app/ /app/
+COPY --from=builder --chown=501:501 /mcp-certs/trusted-odm/tls.crt /mcp-certs/trusted-odm/tls.crt
 COPY                --chown=501:501 /container/script /script
 
 ENV PATH="/app/.venv/bin:$PATH"
