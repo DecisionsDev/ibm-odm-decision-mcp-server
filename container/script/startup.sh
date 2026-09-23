@@ -1,6 +1,26 @@
 #!/usr/bin/env bash
 set -e
 
+safe_value() {
+    local var_name="$1"
+    local var_value="${!var_name}"
+
+    if [ "${var_name}" != "CLIENT_SECRET" ]; then
+        echo -n "${var_value}"
+        return
+    fi
+
+    if [ "${LOG_LEVEL}" = "DEBUG" ]; then
+        if [ ${#var_value} -le 2 ]; then
+            echo -n "${var_value}"
+        else
+            echo -n "${var_value:0:1}*****${var_value: -1}"
+        fi
+    else
+        echo -n "*****"
+    fi
+}
+
 AUTHOIDC_DIR="${AUTHOIDC_DIR:-/authOidc}"
 XML_FILE="${AUTHOIDC_DIR}/openIdWebSecurity.xml"
 PROPS_FILE="${AUTHOIDC_DIR}/openIdParameters.properties"
@@ -67,12 +87,7 @@ if [ -d "${AUTHOIDC_DIR}" ] && { [ -f "${XML_FILE}" ] || [ -f "${PROPS_FILE}" ];
     for VAR in CLIENT_ID CLIENT_SECRET TOKEN_URL SCOPE PKJWT_KEY_PATH PKJWT_CERT_PATH; do
         # Skip if already set
         if [ -n "${!VAR}" ]; then
-            if [ "${VAR}" = "CLIENT_SECRET" ]; then
-                SAFE_VALUE="${!VAR:0:1}*****${!VAR: -1}"
-            else
-                SAFE_VALUE="${!VAR}"
-            fi
-            echo "[startup] ${VAR}=${SAFE_VALUE} (defined as environment variable)."
+            echo "[startup] ${VAR}=$(safe_value "${VAR}") (defined as environment variable)."
             continue
         fi
 
@@ -112,13 +127,7 @@ if [ -d "${AUTHOIDC_DIR}" ] && { [ -f "${XML_FILE}" ] || [ -f "${PROPS_FILE}" ];
             fi
             export "${VAR}=${VALUE}"
 
-            if [ "${VAR}" = "CLIENT_SECRET" ]; then
-                SAFE_VALUE="${VALUE:0:1}*****${VALUE: -1}"
-            else
-                SAFE_VALUE="${VALUE}"
-            fi
-
-            echo "[startup] ${VAR}=${SAFE_VALUE} (set from ${SOURCE})."
+            echo "[startup] ${VAR}=$(safe_value "${VAR}") (set from ${SOURCE})."
         else
             echo "[startup] ${VAR} not found in config files, leaving unset."
         fi
