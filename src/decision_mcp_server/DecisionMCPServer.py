@@ -32,9 +32,10 @@ import os
 import sys
 
 class DecisionMCPServer:
-    def __init__(self, console_credentials: Credentials, runtime_credentials: Credentials, 
+    def __init__(self, console_credentials: Credentials, runtime_credentials: Credentials,
                  transport: Optional[str] = 'stdio', host: Optional[str] = '0.0.0.0', port: Optional[int] = 3000, path: Optional[str] = '/mcp',
-                 traces_dir: Optional[str] = None, trace_enable: bool = False, trace_maxsize: int = 50):
+                 traces_dir: Optional[str] = None, trace_enable: bool = False, trace_maxsize: int = 50,
+                 dedicated_runtimes: Optional[list[tuple[str, str]]] = None):
         # Get logger for this class
         self.logger = logging.getLogger(__name__)
         
@@ -58,6 +59,36 @@ class DecisionMCPServer:
         self.manager = None
         self.console_credentials = console_credentials
         self.runtime_credentials = runtime_credentials
+        # Build a lookup dict: ruleset path prefix -> dedicated Credentials object.
+        # The dedicated runtime shares all auth settings with runtime_credentials,
+        # only the base URL differs.
+        # Multiple paths may point to the same URL: create one Credentials object per
+        # unique URL and reuse it so that auth state (tokens, sessions) is not duplicated.
+        self.dedicated_runtime_credentials: dict[str, Credentials] = {}
+        _url_to_credentials: dict[str, Credentials] = {}
+        for path_prefix, dedicated_url in (dedicated_runtimes or []):
+            if dedicated_url not in _url_to_credentials:
+                _url_to_credentials[dedicated_url] = Credentials(
+                    odm_url=dedicated_url,
+                    token_url=runtime_credentials.token_url,
+                    scope=runtime_credentials.scope,
+                    client_id=runtime_credentials.client_id,
+                    client_secret=runtime_credentials.client_secret,
+                    pkjwt_cert_path=runtime_credentials.pkjwt_cert_path,
+                    pkjwt_key_path=runtime_credentials.pkjwt_key_path,
+                    pkjwt_key_password=runtime_credentials.pkjwt_key_password,
+                    username=runtime_credentials.username,
+                    password=runtime_credentials.password,
+                    zenapikey=runtime_credentials.zenapikey,
+                    verify_ssl=runtime_credentials.verify_ssl,
+                    verify_ssl_hostname=runtime_credentials.verify_ssl_hostname,
+                    ssl_cert_path=runtime_credentials.ssl_cert_path,
+                    mtls_cert_path=runtime_credentials.mtls_cert_path,
+                    mtls_key_path=runtime_credentials.mtls_key_path,
+                    mtls_key_password=runtime_credentials.mtls_key_password,
+                )
+            self.dedicated_runtime_credentials[path_prefix] = _url_to_credentials[dedicated_url]
+            self.logger.info("Dedicated runtime registered: %s -> %s", path_prefix, dedicated_url)
 
         self.transport = transport
         self.host      = host
@@ -109,13 +140,23 @@ class DecisionMCPServer:
         self.logger.info("Invoking decision service for tool: %s with arguments: %s", name, arguments)
         # Ensure manager is initialized before using it
         if self.manager is None:
-            self.manager = DecisionServerManager(console_credentials=self.console_credentials, 
+            self.manager = DecisionServerManager(console_credentials=self.console_credentials,
                                                  runtime_credentials=self.runtime_credentials)
+
+        # Resolve dedicated runtime credentials if the ruleset path matches a registered prefix
+        ruleset_path = self.repository[name].rulesetPath
+        dedicated_credentials = None
+        for path_prefix, creds in self.dedicated_runtime_credentials.items():
+            if ruleset_path.startswith(path_prefix):
+                dedicated_credentials = creds
+                self.logger.info("Using dedicated runtime for path %s: %s", ruleset_path, creds.odm_url)
+                break
 
         try:
             result = self.manager.invokeDecisionService(
-                rulesetPath=self.repository[name].rulesetPath,
-                decisionInputs=arguments
+                rulesetPath=ruleset_path,
+                decisionInputs=arguments,
+                runtime_credentials=dedicated_credentials,
             )
             is_error = False
         except ToolError as e:
@@ -233,6 +274,13 @@ class DecisionMCPServer:
                         streamable_http_path=self.path,
         )
 
+def _dedicated_runtime_pair(value: str) -> tuple[str, str]:
+    """Parse a single 'rulesetPath=serverURL' string into a (path, url) tuple."""
+    if '=' not in value:
+        raise argparse.ArgumentTypeError(f"Expected rulesetPath=serverURL, got: {value!r}")
+    path, _, url = value.partition('=')
+    return (path.strip(), url.strip())
+
 def parse_arguments():
     parser = argparse.ArgumentParser(description="Decision MCP Server")
     parser.add_argument("--url",                                        type=str, default=os.getenv("ODM_URL", "http://localhost:9060/res"), help="ODM service URL")
@@ -271,6 +319,17 @@ def parse_arguments():
     parser.add_argument("--traces-dir",    "--traces_dir",    type=str, default=os.getenv("TRACES_DIR"), help="Directory to store execution traces (optional). If not provided, traces will be stored in the 'traces' directory in the project root.")
     parser.add_argument("--trace-enable",  "--trace_enable",  type=str, default=os.getenv("TRACE_ENABLE", "False"), choices=["True", "False"], help="Enable trace storage. Default is False (trace storage disabled).")
     parser.add_argument("--trace-maxsize", "--trace_maxsize", type=int, default=int(os.getenv("TRACE_MAXSIZE", "50")), help="Maximum number of traces to store (default: 50)")
+
+    parser.add_argument(
+        "--dedicated-runtimes", "--dedicated_runtimes",
+        type=_dedicated_runtime_pair,
+        nargs='+',
+        default=[_dedicated_runtime_pair(item) for item in (os.getenv("DEDICATED_RUNTIMES") or "").split()],
+        metavar="PATH=URL",
+        help="Map specific ruleset paths to dedicated runtime servers. "
+             "Provide one or more PATH=URL pairs (e.g. --dedicated-runtimes /myapp/1.0/myruleset/1.0=http://runtime2:9060/DecisionService). "
+             "When call_tool is invoked, if the ruleset path starts with PATH the request is sent to URL instead of the default runtime."
+    )
 
     return parser.parse_args()
 
@@ -382,5 +441,6 @@ def main():
         traces_dir=args.traces_dir,
         trace_enable=trace_enable,
         trace_maxsize=args.trace_maxsize,
+        dedicated_runtimes=args.dedicated_runtimes or None,
     )
     server.start()

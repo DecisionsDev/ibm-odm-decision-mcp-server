@@ -455,7 +455,8 @@ async def test_call_tool_success(server, mock_manager):
     assert mock_manager.invokeDecisionService.called
     assert mock_manager.invokeDecisionService.call_args[1] == {
         "rulesetPath": "/test/path",
-        "decisionInputs": arguments
+        "decisionInputs": arguments,
+        "runtime_credentials": None,
     }
     
     # Verify response format
