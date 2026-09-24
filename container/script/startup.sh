@@ -84,6 +84,23 @@ if [ -d "${AUTHOIDC_DIR}" ] && { [ -f "${XML_FILE}" ] || [ -f "${PROPS_FILE}" ];
         fi
     fi
 
+    # Check if discoveryEndpointUrl is configured in XML and fetch its JSON document once
+    DISCOVERY_JSON=""
+    DISCOVERY_SOURCE=""
+    if [ -f "${XML_FILE}" ]; then
+        DISCOVERY_URL=$(xmllint --xpath "string((//*[local-name()='openidConnectClient'])[1]/@discoveryEndpointUrl)" "${XML_FILE}" 2>/dev/null || true)
+        if [ -n "${DISCOVERY_URL}" ]; then
+            for V_NAME in "${!XML_VARS[@]}"; do
+                DISCOVERY_URL="${DISCOVERY_URL//\$\{$V_NAME\}/${XML_VARS[$V_NAME]}}"
+            done
+            FETCHED_JSON=$(curl -sSL -k "${DISCOVERY_URL}" 2>/dev/null || true)
+            if [ -n "${FETCHED_JSON}" ]; then
+                DISCOVERY_JSON="${FETCHED_JSON}"
+                DISCOVERY_SOURCE="${DISCOVERY_URL}"
+            fi
+        fi
+    fi
+
     for VAR in CLIENT_ID CLIENT_SECRET TOKEN_URL SCOPE PKJWT_KEY_PATH PKJWT_CERT_PATH; do
         # Skip if already set
         if [ -n "${!VAR}" ]; then
@@ -107,8 +124,16 @@ if [ -d "${AUTHOIDC_DIR}" ] && { [ -f "${XML_FILE}" ] || [ -f "${PROPS_FILE}" ];
                 for V_NAME in "${!XML_VARS[@]}"; do
                     VALUE="${VALUE//\$\{$V_NAME\}/${XML_VARS[$V_NAME]}}"
                 done
+                SOURCE="${XML_FILE}"
             fi
-            SOURCE="${XML_FILE}"
+        fi
+
+        # If TOKEN_URL is missing from XML, extract from discovery JSON
+        if [ -z "${VALUE}" ] && [ "${VAR}" = "TOKEN_URL" ] && [ -n "${DISCOVERY_JSON}" ]; then
+            VALUE=$(python3 -c "import sys, json; print(json.loads(sys.stdin.read()).get('token_endpoint', '') or '')" <<< "${DISCOVERY_JSON}" 2>/dev/null || true)
+            if [ -n "${VALUE}" ]; then
+                SOURCE="${DISCOVERY_SOURCE}"
+            fi
         fi
 
         # Fallback to properties file
