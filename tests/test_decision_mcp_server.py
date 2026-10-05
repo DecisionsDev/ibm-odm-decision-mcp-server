@@ -60,6 +60,20 @@ def test_server_initialization(decision_server):
     assert decision_server.console_credentials is not None
     assert decision_server.runtime_credentials is not None
 
+def test_server_init_disables_urllib3_warnings():
+    """urllib3.disable_warnings() must be called (no args) during DecisionMCPServer.__init__."""
+    with patch('urllib3.disable_warnings') as mock_disable_warnings:
+        credentials = Credentials(
+            odm_url="http://test:9060/res",
+            username="user",
+            password="pass"
+        )
+        DecisionMCPServer(
+            console_credentials=credentials,
+            runtime_credentials=credentials
+        )
+        mock_disable_warnings.assert_called_once_with()
+
 # Test argument parsing
 @pytest.mark.parametrize("args,expected", [
     (
