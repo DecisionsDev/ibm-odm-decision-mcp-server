@@ -290,18 +290,6 @@ def create_credentials(args):
                 verify_ssl=verifyssl,
                 verify_ssl_hostname=verifyssl_hostname,
             )
-        elif (args.client_secret and (auth_type is None or auth_type == "SECRET")):  # OpenID Client Secret provided
-            return Credentials(
-                odm_url=url,
-                token_url=args.token_url,
-                scope=args.scope,
-                client_id=args.client_id,
-                client_secret=args.client_secret,
-                mtls_cert_path=args.mtls_cert_path, mtls_key_path=args.mtls_key_path, mtls_key_password=args.mtls_key_password,
-                ssl_cert_path=args.ssl_cert_path,
-                verify_ssl=verifyssl,
-                verify_ssl_hostname=verifyssl_hostname,
-            )
         elif (args.pkjwt_key_path and (auth_type is None or auth_type == "PKJWT")):  # OpenID PKJWT
             return Credentials(
                 odm_url=url,
@@ -309,6 +297,18 @@ def create_credentials(args):
                 scope=args.scope,
                 client_id=args.client_id,
                 pkjwt_cert_path=args.pkjwt_cert_path, pkjwt_key_path=args.pkjwt_key_path, pkjwt_key_password=args.pkjwt_key_password,
+                mtls_cert_path=args.mtls_cert_path, mtls_key_path=args.mtls_key_path, mtls_key_password=args.mtls_key_password,
+                ssl_cert_path=args.ssl_cert_path,
+                verify_ssl=verifyssl,
+                verify_ssl_hostname=verifyssl_hostname,
+            )
+        elif (args.client_secret and (auth_type is None or auth_type == "SECRET")):  # OpenID Client Secret provided
+            return Credentials(
+                odm_url=url,
+                token_url=args.token_url,
+                scope=args.scope,
+                client_id=args.client_id,
+                client_secret=args.client_secret,
                 mtls_cert_path=args.mtls_cert_path, mtls_key_path=args.mtls_key_path, mtls_key_password=args.mtls_key_password,
                 ssl_cert_path=args.ssl_cert_path,
                 verify_ssl=verifyssl,
