@@ -198,14 +198,14 @@ class DecisionServerManager:
             else:
                 self.logger.error("Request failed with status code: %s", response.status_code)
                 self.logger.error("Response: %s", response.text)
-                raise Exception(response.text)
+                raise ToolError(f"{response.text} from {self.runtime_credentials.odm_url}/rest/{ruleset["id"]}/openapi")
 
         except requests.exceptions.RequestException as e:
             self.logger.error("An error occurred: %s", e)
-            raise e
+            raise ToolError(f"{str(e)} from {self.runtime_credentials.odm_url}/rest/{ruleset["id"]}/openapi")
         except json.JSONDecodeError as e:
             self.logger.error("Failed to decode JSON response.")
-            raise e
+            raise ToolError(f"{str(e)} - Error parsing response from {self.runtime_credentials.odm_url}/rest/{ruleset["id"]}/openapi")
         finally:
             self.runtime_credentials.cleanup()
         
@@ -241,11 +241,7 @@ class DecisionServerManager:
         formatted_tools = []
 
         for ruleset in filtered_rulesets.values():
-
-            try:
-                input_schema = self.get_input_schema(ruleset)
-            except Exception:
-                continue # ignore this ruleset
+            input_schema = self.get_input_schema(ruleset)
             toolName = next((prop["value"] for prop in ruleset["properties"] if prop["id"] == "agent.name"), ruleset["displayName"]).replace(" ", "_").lower()
             toolDescription = next((prop["value"] for prop in ruleset["properties"] if prop["id"] == "agent.description"), ruleset["description"])
              # Define a class to hold the formatted ruleset data
