@@ -813,4 +813,141 @@ def test_ssl_verify_false_sets_cacert_none():
     )
     assert cred.cacert is None
 
+
+def test_get_auth_pkjwt_import_error():
+    """Test that a missing PyJWT package raises a clear ImportError."""
+    import builtins
+    real_import = builtins.__import__
+
+    def mock_import(name, *args, **kwargs):
+        if name == 'jwt':
+            raise ImportError("No module named 'jwt'")
+        return real_import(name, *args, **kwargs)
+
+    import tempfile
+    import os
+
+    with tempfile.NamedTemporaryFile(delete=False, suffix='.key') as kf:
+        kf.write(b"-----BEGIN PRIVATE KEY-----\ncontent\n-----END PRIVATE KEY-----")
+        key_path = kf.name
+    with tempfile.NamedTemporaryFile(delete=False, suffix='.crt') as cf:
+        cf.write(b"-----BEGIN CERTIFICATE-----\ncontent\n-----END CERTIFICATE-----")
+        cert_path = cf.name
+
+    try:
+        cred = Credentials(
+            odm_url="http://localhost:9060/res",
+            client_id="test_client_id",
+            pkjwt_key_path=key_path,
+            pkjwt_cert_path=cert_path,
+            token_url="https://auth.example.com/token"
+        )
+        with patch('builtins.__import__', side_effect=mock_import):
+            with pytest.raises(ImportError, match="PyJWT package is required for PKJWT authentication"):
+                cred.get_auth()
+    finally:
+        os.unlink(key_path)
+        os.unlink(cert_path)
+
+
+@responses.activate
+def test_get_auth_pkjwt_jwt_payload_and_algorithm():
+    """Test that jwt.encode is called with the correct RS256 algorithm and expected payload fields."""
+    import tempfile
+    import os
+    from unittest.mock import patch, MagicMock
+
+    with tempfile.NamedTemporaryFile(delete=False, suffix='.key') as kf:
+        kf.write(b"-----BEGIN PRIVATE KEY-----\ncontent\n-----END PRIVATE KEY-----")
+        key_path = kf.name
+    with tempfile.NamedTemporaryFile(delete=False, suffix='.crt') as cf:
+        cf.write(b"-----BEGIN CERTIFICATE-----\ncontent\n-----END CERTIFICATE-----")
+        cert_path = cf.name
+
+    token_url = "https://auth.example.com/token"
+    client_id = "my_client_id"
+
+    responses.add(
+        responses.POST,
+        token_url,
+        json={"access_token": "tok", "token_type": "Bearer", "expires_in": 3600},
+        status=200
+    )
+
+    try:
+        with patch('cryptography.x509.load_pem_x509_certificate') as mock_load_cert, \
+             patch('cryptography.x509.load_der_x509_certificate') as mock_load_der, \
+             patch('jwt.encode') as mock_encode:
+
+            mock_cert = MagicMock()
+            mock_cert.public_bytes.return_value = b"cert_bytes"
+            mock_load_cert.return_value = mock_cert
+            mock_load_der.return_value = mock_cert
+            mock_encode.return_value = "dummy.jwt.token"
+
+            cred = Credentials(
+                odm_url="http://localhost:9060/res",
+                client_id=client_id,
+                pkjwt_key_path=key_path,
+                pkjwt_cert_path=cert_path,
+                token_url=token_url
+            )
+            cred.get_auth()
+
+            assert mock_encode.called
+            args, kwargs = mock_encode.call_args
+
+            # First positional arg is the payload
+            payload = args[0]
+            assert payload['iss'] == client_id
+            assert payload['sub'] == client_id
+            assert payload['aud'] == token_url
+            assert 'exp' in payload
+            assert 'iat' in payload
+            assert 'jti' in payload
+
+            # Algorithm must be RS256
+            assert kwargs.get('algorithm') == 'RS256'
+    finally:
+        os.unlink(key_path)
+        os.unlink(cert_path)
+
+
+def test_get_session_http_disable_warnings_specific_arg():
+    """urllib3.disable_warnings must be called with InsecureRequestWarning when using HTTP."""
+    import urllib3
+    with patch('requests.Session') as mock_session_class, \
+         patch('urllib3.disable_warnings') as mock_disable_warnings:
+
+        mock_session_class.return_value.headers = {}
+
+        cred = Credentials(
+            odm_url="http://localhost:9060/res",
+            username="user",
+            password="pass"
+        )
+        cred.get_session()
+
+        mock_disable_warnings.assert_called_once_with(urllib3.exceptions.InsecureRequestWarning)
+
+
+def test_get_session_https_no_verify_disable_warnings_specific_arg():
+    """urllib3.disable_warnings must be called with InsecureRequestWarning when verify_ssl=False."""
+    import urllib3
+    with patch('requests.Session') as mock_session_class, \
+         patch('urllib3.disable_warnings') as mock_disable_warnings:
+
+        mock_session_class.return_value.headers = {}
+
+        cred = Credentials(
+            odm_url="https://localhost:9060/res",
+            username="user",
+            password="pass",
+            verify_ssl=False
+        )
+        cred.get_session()
+
+        mock_disable_warnings.assert_called_once_with(urllib3.exceptions.InsecureRequestWarning)
+
+
 # Made with Bob
