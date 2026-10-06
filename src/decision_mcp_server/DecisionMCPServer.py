@@ -30,6 +30,7 @@ from decision_mcp_server.ExecutionToolTrace import ExecutionToolTrace, DiskTrace
 import argparse
 import os
 import sys
+import socket
 
 class DecisionMCPServer:
     def __init__(self, console_credentials: Credentials, runtime_credentials: Credentials, 
@@ -348,6 +349,34 @@ def create_credentials(args):
 
     return console_credentials, runtime_credentials
     
+class _SuppressAccessLogForProbes(logging.Filter):
+    """Drop uvicorn access-log entries from health-check probes.
+
+    Suppresses two categories:
+    - Any request to the root path ``/`` (health-check route, regardless of source).
+    - Requests whose client address matches the local pod IP or 127.0.0.1.
+
+    Uvicorn emits: logger.info('%s - "%s %s HTTP/%s" %d', client_addr, method, path, http_version, status_code)
+    so record.args is a 5-element tuple: (client_addr, method, path, http_version, status_code).
+    """
+
+    def __init__(self, local_ip: str) -> None:
+        super().__init__()
+        # Always include the loopback address in addition to the resolved pod IP.
+        self._prefixes = {local_ip + ":", "127.0.0.1:"}
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if record.name != "uvicorn.access":
+            return True
+        args = record.args
+        if not (isinstance(args, tuple) and len(args) >= 3):
+            return True
+        # Suppress health-check hits on the root path from any source.
+        if str(args[2]) == "/":
+            return False
+        client = str(args[0])
+        return not any(client.startswith(p) for p in self._prefixes)
+
 def main():
     """Main entry point for the Decision MCP Server."""
     args = parse_arguments()
@@ -370,6 +399,19 @@ def main():
             datefmt='%Y-%m-%d %H:%M:%S'
         )
     logging.info(f"Running Python {sys.version_info}. Logging level set to: {logging.getLevelName(logging_level)}")
+
+    # suppress access logs originating from probes when running in a k8s pod
+    running_in_pod = os.getenv("RUNNING_IN_POD", "False") != "False"
+    if running_in_pod and args.transport == "streamable-http":
+        import uvicorn.config as _uvicorn_config
+        probe_filter = _SuppressAccessLogForProbes(local_ip=socket.gethostbyname(socket.gethostname()))
+        _original_configure_logging = _uvicorn_config.Config.configure_logging
+
+        def _configure_logging_with_filter(self) -> None:  # type: ignore[override]
+            _original_configure_logging(self)
+            logging.getLogger("uvicorn.access").addFilter(probe_filter)
+
+        _uvicorn_config.Config.configure_logging = _configure_logging_with_filter
 
     console_credentials, runtime_credentials = create_credentials(args)
     # Convert trace_enable from string to boolean
