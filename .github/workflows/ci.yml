@@ -20,6 +20,8 @@ jobs:
       with:
         python-version: '3.13'
 
+    - name: Install XML tooling
+      run: sudo apt-get update && sudo apt-get install -y libxml2-utils
 
     - name: Install dependencies for testing and documentation
       run: |
