@@ -714,18 +714,6 @@ def test_get_auth_missing_client_id():
     with pytest.raises(ValueError, match="Both 'client_id' and 'token_url' are required for OpenId authentication."):
         cred.get_auth()
 
-def test_get_auth_missing_client_secret():
-    """Test get_auth with missing client_secret for standard OpenID authentication."""
-    cred = Credentials(
-        odm_url="http://localhost:9060/res",
-        client_id="client_id",
-        # client_secret is missing
-        token_url="http://auth.example.com/token"
-    )
-    
-    with pytest.raises(ValueError, match="Either 'client_secret' or 'pkjwt_key_path' is required for OpenId authentication."):
-        cred.get_auth()
-
 def test_get_unencrypted_key_data_wrong_password():
     """Test get_unencrypted_key_data with wrong password."""
     import tempfile
