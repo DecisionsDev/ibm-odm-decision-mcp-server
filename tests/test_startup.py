@@ -22,7 +22,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../'
 
 STARTUP_SCRIPT = os.path.abspath(os.path.join(os.path.dirname(__file__), '../container/script/startup.sh'))
 
-def run_startup(tmp_path, env_overrides=None, xml_content=None, props_content=None):
+def run_startup(tmp_path, env_overrides=None, xml_content=None, props_content=None, oidc_providers_content=None):
     """
     Helper to set up a test environment and run container/script/startup.sh.
     Returns a dict of the parsed environment variables that were passed to the mock server,
@@ -57,6 +57,8 @@ def run_startup(tmp_path, env_overrides=None, xml_content=None, props_content=No
         (auth_dir / "openIdWebSecurity.xml").write_text(xml_content)
     if props_content is not None:
         (auth_dir / "openIdParameters.properties").write_text(props_content)
+    if oidc_providers_content is not None:
+        (auth_dir / "OdmOidcProviders.json").write_text(oidc_providers_content)
 
     # Build the environment
     env = os.environ.copy()
@@ -312,6 +314,140 @@ def test_pkjwt_paths_not_set_without_private_key_jwt_method(tmp_path):
     assert parsed_vars.get("PKJWT_KEY_PATH") == ""
     assert parsed_vars.get("PKJWT_CERT_PATH") == ""
     assert "WARNING" not in stdout
+
+# ---------------------------------------------------------------------------
+# OdmOidcProviders.json tests
+# ---------------------------------------------------------------------------
+
+def test_oidc_providers_single_client_credentials(tmp_path):
+    # Single provider with grantType client_credentials → CLIENT_ID, CLIENT_SECRET, SCOPE extracted
+    import json
+    providers = json.dumps({
+        "providers": [
+            {
+                "name": "my-provider",
+                "grantType": "client_credentials",
+                "clientId": "prov-id",
+                "clientSecret": "prov-secret",
+                "scope": "prov-scope"
+            }
+        ]
+    })
+    parsed_vars, stdout, _ = run_startup(tmp_path, oidc_providers_content=providers)
+
+    assert parsed_vars.get("CLIENT_ID") == "prov-id"
+    assert parsed_vars.get("CLIENT_SECRET") == "prov-secret"
+    assert parsed_vars.get("SCOPE") == "prov-scope"
+    assert "OdmOidcProviders.json" in stdout
+
+
+def test_oidc_providers_picks_client_credentials_only(tmp_path):
+    # Multiple providers — only the client_credentials one must be used
+    import json
+    providers = json.dumps({
+        "providers": [
+            {
+                "name": "auth-code-provider",
+                "grantType": "authorization_code",
+                "clientId": "wrong-id",
+                "clientSecret": "wrong-secret",
+                "scope": "wrong-scope"
+            },
+            {
+                "name": "cc-provider",
+                "grantType": "client_credentials",
+                "clientId": "correct-id",
+                "clientSecret": "correct-secret",
+                "scope": "correct-scope"
+            }
+        ]
+    })
+    parsed_vars, stdout, _ = run_startup(tmp_path, oidc_providers_content=providers)
+
+    assert parsed_vars.get("CLIENT_ID") == "correct-id"
+    assert parsed_vars.get("CLIENT_SECRET") == "correct-secret"
+    assert parsed_vars.get("SCOPE") == "correct-scope"
+
+
+def test_oidc_providers_wins_over_xml(tmp_path):
+    # OdmOidcProviders.json must take priority over openIdWebSecurity.xml
+    import json
+    providers = json.dumps({
+        "providers": [
+            {
+                "name": "cc",
+                "grantType": "client_credentials",
+                "clientId": "json-id",
+                "clientSecret": "json-secret",
+                "scope": "json-scope"
+            }
+        ]
+    })
+    xml = """<server>
+      <openidConnectClient id="default"
+                           clientId="xml-id"
+                           clientSecret="xml-secret"
+                           scope="xml-scope" />
+    </server>"""
+    parsed_vars, _, _ = run_startup(tmp_path, xml_content=xml, oidc_providers_content=providers)
+
+    assert parsed_vars.get("CLIENT_ID") == "json-id"
+    assert parsed_vars.get("CLIENT_SECRET") == "json-secret"
+    assert parsed_vars.get("SCOPE") == "json-scope"
+
+
+def test_oidc_providers_env_var_wins_over_json(tmp_path):
+    # Environment variables must still take priority over OdmOidcProviders.json
+    import json
+    providers = json.dumps({
+        "providers": [
+            {
+                "name": "cc",
+                "grantType": "client_credentials",
+                "clientId": "json-id",
+                "clientSecret": "json-secret",
+                "scope": "json-scope"
+            }
+        ]
+    })
+    env_overrides = {
+        "CLIENT_ID": "env-id",
+        "CLIENT_SECRET": "env-secret",
+    }
+    parsed_vars, _, _ = run_startup(tmp_path, env_overrides=env_overrides, oidc_providers_content=providers)
+
+    assert parsed_vars.get("CLIENT_ID") == "env-id"
+    assert parsed_vars.get("CLIENT_SECRET") == "env-secret"
+    # SCOPE not set via env → comes from JSON
+    assert parsed_vars.get("SCOPE") == "json-scope"
+
+
+def test_oidc_providers_no_client_credentials_falls_through_to_xml(tmp_path):
+    # No client_credentials provider → falls through to XML
+    import json
+    providers = json.dumps({
+        "providers": [
+            {
+                "name": "auth-code-provider",
+                "grantType": "authorization_code",
+                "clientId": "wrong-id",
+                "clientSecret": "wrong-secret",
+                "scope": "wrong-scope"
+            }
+        ]
+    })
+    xml = """<server>
+      <openidConnectClient id="default"
+                           clientId="xml-id"
+                           clientSecret="xml-secret"
+                           scope="xml-scope" />
+    </server>"""
+    parsed_vars, _, _ = run_startup(tmp_path, xml_content=xml, oidc_providers_content=providers)
+
+    assert parsed_vars.get("CLIENT_ID") == "xml-id"
+    assert parsed_vars.get("CLIENT_SECRET") == "xml-secret"
+    assert parsed_vars.get("SCOPE") == "xml-scope"
+
 
 def test_startup_xml_discovery_endpoint(tmp_path):
     import http.server

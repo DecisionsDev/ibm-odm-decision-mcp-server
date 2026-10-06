@@ -24,9 +24,10 @@ safe_value() {
 AUTHOIDC_DIR="${AUTHOIDC_DIR:-/authOidc}"
 XML_FILE="${AUTHOIDC_DIR}/openIdWebSecurity.xml"
 PROPS_FILE="${AUTHOIDC_DIR}/openIdParameters.properties"
+OIDC_PROVIDERS_FILE="${AUTHOIDC_DIR}/OdmOidcProviders.json"
 
-# Only proceed if the directory exists and contains at least one of the two files
-if [ -d "${AUTHOIDC_DIR}" ] && { [ -f "${XML_FILE}" ] || [ -f "${PROPS_FILE}" ]; }; then
+# Only proceed if the directory exists and contains at least one of the config files
+if [ -d "${AUTHOIDC_DIR}" ] && { [ -f "${XML_FILE}" ] || [ -f "${PROPS_FILE}" ] || [ -f "${OIDC_PROVIDERS_FILE}" ]; }; then
 
     # Maps: ENV_VAR_NAME -> xml_attribute_name -> properties_key
     declare -A XML_ATTR=(
@@ -62,9 +63,24 @@ if [ -d "${AUTHOIDC_DIR}" ] && { [ -f "${XML_FILE}" ] || [ -f "${PROPS_FILE}" ];
 
     # Build list of files being parsed for the startup message
     PARSING_FILES=""
-    [ -f "${XML_FILE}" ]   && PARSING_FILES="${XML_FILE}"
+    [ -f "${OIDC_PROVIDERS_FILE}" ] && PARSING_FILES="${OIDC_PROVIDERS_FILE}"
+    [ -f "${XML_FILE}" ]   && PARSING_FILES="${PARSING_FILES:+${PARSING_FILES} and }${XML_FILE}"
     [ -f "${PROPS_FILE}" ] && PARSING_FILES="${PARSING_FILES:+${PARSING_FILES} and }${PROPS_FILE}"
     echo "[startup] Parsing ${PARSING_FILES}"
+
+    # Extract CLIENT_ID, CLIENT_SECRET, SCOPE from OdmOidcProviders.json (highest priority after env vars)
+    declare -A OIDC_PROVIDERS_VARS=()
+    if [ -f "${OIDC_PROVIDERS_FILE}" ]; then
+        read -r OIDC_CLIENT_ID OIDC_CLIENT_SECRET OIDC_SCOPE < <(python3 -c "
+import json, sys
+providers = json.load(open('${OIDC_PROVIDERS_FILE}')).get('providers', [])
+p = next((x for x in providers if x.get('grantType') == 'client_credentials'), None)
+print(p.get('clientId', '') if p else '', p.get('clientSecret', '') if p else '', p.get('scope', '') if p else '')
+" 2>/dev/null || echo "")
+        [ -n "${OIDC_CLIENT_ID}" ]     && OIDC_PROVIDERS_VARS[CLIENT_ID]="${OIDC_CLIENT_ID}"
+        [ -n "${OIDC_CLIENT_SECRET}" ] && OIDC_PROVIDERS_VARS[CLIENT_SECRET]="${OIDC_CLIENT_SECRET}"
+        [ -n "${OIDC_SCOPE}" ]         && OIDC_PROVIDERS_VARS[SCOPE]="${OIDC_SCOPE}"
+    fi
 
     # Extract any variables defined in the XML file
     declare -A XML_VARS=()
@@ -111,8 +127,13 @@ if [ -d "${AUTHOIDC_DIR}" ] && { [ -f "${XML_FILE}" ] || [ -f "${PROPS_FILE}" ];
         VALUE=""
         SOURCE=""
 
-        # Try XML file first (exclude commented-out lines)
-        if [ -f "${XML_FILE}" ]; then
+        # Try OdmOidcProviders.json first (for CLIENT_ID, CLIENT_SECRET, SCOPE)
+        if [ -n "${OIDC_PROVIDERS_VARS[$VAR]:-}" ]; then
+            VALUE="${OIDC_PROVIDERS_VARS[$VAR]}"
+            SOURCE="${OIDC_PROVIDERS_FILE}"
+        fi
+
+        if [ -z "${VALUE}" ] && [ -f "${XML_FILE}" ]; then
             if [ "${VAR}" = "PKJWT_KEY_PATH" ] || [ "${VAR}" = "PKJWT_CERT_PATH" ]; then
                 # Extract keyAliasName from openidConnectClient elements where tokenEndpointAuthMethod is set to "private_key_jwt"
                 VALUE=$(xmllint --xpath "string((//*[local-name()='openidConnectClient'][@tokenEndpointAuthMethod='private_key_jwt'])[1]/@keyAliasName)" "${XML_FILE}" 2>/dev/null)
