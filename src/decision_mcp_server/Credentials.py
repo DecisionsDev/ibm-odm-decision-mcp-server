@@ -254,19 +254,13 @@ class Credentials:
                         response = requests.post(self.token_url, data=data, verify=False)
                 except Exception as e:
                     raise ValueError(f"Error creating or sending JWT token: {str(e)}")
-            else:
-                # Standard OpenID client_secret authentication
-                if not self.client_secret:
-                    if self.pkjwt_cert_path:
-                        raise ValueError("Both 'pkjwt_key_path' and 'pkjwt_cert_path' are required for PKJWT authentication.")
-                    else:
-                        raise ValueError("Either 'client_secret' or 'pkjwt_key_path' is required for OpenId authentication.")
-                
+
+            else:   # OpenID w/ or w/o client secret
                 data = {
                     'grant_type': 'client_credentials',
                     'scope': self.scope,
                 }
-                auth = requests.auth.HTTPBasicAuth(self.client_id, self.client_secret)
+                auth = requests.auth.HTTPBasicAuth(self.client_id, self.client_secret) if self.client_secret else None
                 if self.verify_ssl:
                     response = requests.post(self.token_url, data=data, auth=auth, verify=self.cacert)
                 else:

@@ -755,3 +755,195 @@ def test_server_start_with_sse_transport():
             port=8080,
             streamable_http_path="/sse-endpoint"
         )
+
+
+def test_suppress_access_log_for_probes():
+    """Test that _SuppressAccessLogForProbes correctly filters uvicorn access logs."""
+    from decision_mcp_server.DecisionMCPServer import _SuppressAccessLogForProbes
+    import logging
+
+    local_ip = "10.244.0.15"
+    filter_instance = _SuppressAccessLogForProbes(local_ip=local_ip)
+
+    # 1. Non-uvicorn.access logs should not be filtered
+    record = logging.LogRecord(
+        name="some.other.logger",
+        level=logging.INFO,
+        pathname="test.py",
+        lineno=10,
+        msg="Some message",
+        args=(),
+        exc_info=None
+    )
+    assert filter_instance.filter(record) is True
+
+    # 2. Uvicorn.access log without args or with short args should not be filtered
+    record = logging.LogRecord(
+        name="uvicorn.access",
+        level=logging.INFO,
+        pathname="test.py",
+        lineno=10,
+        msg="Some message",
+        args=(),
+        exc_info=None
+    )
+    assert filter_instance.filter(record) is True
+
+    record.args = ("only_one_arg",)
+    assert filter_instance.filter(record) is True
+
+    # 3. Suppress health-check hits on "/" from any source
+    record = logging.LogRecord(
+        name="uvicorn.access",
+        level=logging.INFO,
+        pathname="test.py",
+        lineno=10,
+        msg='%s - "%s %s HTTP/%s" %d',
+        args=("192.168.1.1:54321", "GET", "/", "1.1", 200),
+        exc_info=None
+    )
+    assert filter_instance.filter(record) is False
+
+    # 4. Suppress hits from 127.0.0.1 even if path is not "/" (e.g. "/mcp")
+    record = logging.LogRecord(
+        name="uvicorn.access",
+        level=logging.INFO,
+        pathname="test.py",
+        lineno=10,
+        msg='%s - "%s %s HTTP/%s" %d',
+        args=("127.0.0.1:12345", "GET", "/mcp", "1.1", 200),
+        exc_info=None
+    )
+    assert filter_instance.filter(record) is False
+
+    # 5. Suppress hits from local pod IP even if path is not "/" (e.g. "/mcp")
+    record = logging.LogRecord(
+        name="uvicorn.access",
+        level=logging.INFO,
+        pathname="test.py",
+        lineno=10,
+        msg='%s - "%s %s HTTP/%s" %d',
+        args=(f"{local_ip}:54321", "GET", "/mcp", "1.1", 200),
+        exc_info=None
+    )
+    assert filter_instance.filter(record) is False
+
+    # 6. Allow hits from other IP if path is not "/" (e.g. "/mcp" or "/decision-mcp")
+    record = logging.LogRecord(
+        name="uvicorn.access",
+        level=logging.INFO,
+        pathname="test.py",
+        lineno=10,
+        msg='%s - "%s %s HTTP/%s" %d',
+        args=("192.168.1.1:54321", "GET", "/mcp", "1.1", 200),
+        exc_info=None
+    )
+    assert filter_instance.filter(record) is True
+
+
+def test_main_running_in_pod_streamable_http():
+    """Test that main() configures logging filter when RUNNING_IN_POD is True and transport is streamable-http."""
+    from decision_mcp_server.DecisionMCPServer import main
+    import sys
+    import logging
+    import uvicorn.config as _uvicorn_config
+
+    # Save original configure_logging
+    original_configure_logging = _uvicorn_config.Config.configure_logging
+
+    try:
+        # Mock sys.argv
+        test_args = ["DecisionMCPServer", "--transport", "streamable-http"]
+        
+        with patch('sys.argv', test_args), \
+             patch('os.getenv') as mock_getenv, \
+             patch('socket.gethostname') as mock_gethostname, \
+             patch('socket.gethostbyname') as mock_gethostbyname, \
+             patch('decision_mcp_server.DecisionMCPServer.create_credentials') as mock_create_creds, \
+             patch('decision_mcp_server.DecisionMCPServer.DecisionMCPServer') as mock_server_class:
+            
+            # Setup env to simulate running in a pod
+            def getenv_side_effect(key, default=None):
+                if key == "RUNNING_IN_POD":
+                    return "True"
+                return default
+            mock_getenv.side_effect = getenv_side_effect
+            
+            mock_gethostname.return_value = "pod-12345"
+            mock_gethostbyname.return_value = "10.244.0.15"
+            
+            mock_create_creds.return_value = (Mock(), Mock())
+            mock_server_instance = mock_server_class.return_value
+            mock_server_instance.start = Mock()
+            
+            # Execute main
+            main()
+            
+            # Verify uvicorn.config.Config.configure_logging has been patched
+            assert _uvicorn_config.Config.configure_logging != original_configure_logging
+            
+            # Verify the patch works: let's invoke the configure_logging on a dummy object
+            # and verify the uvicorn.access logger gets our filter
+            dummy_config = _uvicorn_config.Config(app=Mock())
+            
+            # Clear filter if it already exists from a previous test/run
+            logger = logging.getLogger("uvicorn.access")
+            logger.filters.clear()
+            
+            # Call the custom configure_logging method
+            _uvicorn_config.Config.configure_logging(dummy_config)
+            
+            # The logger should now have at least one filter
+            assert len(logger.filters) >= 1
+            
+            # Let's verify it is our custom filter
+            from decision_mcp_server.DecisionMCPServer import _SuppressAccessLogForProbes
+            found_filter = False
+            for f in logger.filters:
+                if isinstance(f, _SuppressAccessLogForProbes):
+                    found_filter = True
+                    # Verify it was initialized with our mocked local_ip
+                    assert "10.244.0.15:" in f._prefixes
+                    break
+            assert found_filter is True
+            
+    finally:
+        # Restore original configure_logging
+        _uvicorn_config.Config.configure_logging = original_configure_logging
+
+
+def test_main_not_running_in_pod():
+    """Test that main() does NOT configure logging filter when RUNNING_IN_POD is False or missing."""
+    from decision_mcp_server.DecisionMCPServer import main
+    import uvicorn.config as _uvicorn_config
+
+    original_configure_logging = _uvicorn_config.Config.configure_logging
+
+    try:
+        # Mock sys.argv
+        test_args = ["DecisionMCPServer", "--transport", "streamable-http"]
+        
+        with patch('sys.argv', test_args), \
+             patch('os.getenv') as mock_getenv, \
+             patch('decision_mcp_server.DecisionMCPServer.create_credentials') as mock_create_creds, \
+             patch('decision_mcp_server.DecisionMCPServer.DecisionMCPServer') as mock_server_class:
+            
+            # RUNNING_IN_POD is False
+            def getenv_side_effect(key, default=None):
+                if key == "RUNNING_IN_POD":
+                    return "False"
+                return default
+            mock_getenv.side_effect = getenv_side_effect
+            
+            mock_create_creds.return_value = (Mock(), Mock())
+            mock_server_instance = mock_server_class.return_value
+            mock_server_instance.start = Mock()
+            
+            # Execute main
+            main()
+            
+            # Verify configure_logging is not patched
+            assert _uvicorn_config.Config.configure_logging == original_configure_logging
+            
+    finally:
+        _uvicorn_config.Config.configure_logging = original_configure_logging
