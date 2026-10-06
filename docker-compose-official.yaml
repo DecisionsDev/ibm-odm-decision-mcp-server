@@ -11,5 +11,6 @@ services:
         - "linux/s390x"
       args:
         BUILDKIT_INLINE_CACHE: 0
+        TRUSTSTORE_PWD: $TRUSTSTORE_PWD
         VERSION: $VERSION
       no_cache: true
