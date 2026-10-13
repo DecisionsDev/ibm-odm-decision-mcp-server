@@ -115,10 +115,10 @@ class DecisionServerManager:
         for (ruleapp_name, ruleset_name), rulesets in ruleset_groups.items():
             # Sort rulesets by ruleapp version and then by ruleset version
             filtered_rulesets = [
-            (version, ruleset) for version, ruleset in rulesets
-            if any(prop["id"] == "ruleset.status" and prop["value"] == "enabled" for prop in ruleset["properties"])
-             and any(prop["id"] == "agent.enabled" and prop["value"].lower() == "true" for prop in ruleset["properties"])
-           ]
+                (version, ruleset) for version, ruleset in rulesets
+                     if any(prop["id"] == "ruleset.status" and prop["value"] == "enabled"      for prop in ruleset["properties"])
+                    and any(prop["id"] == "agent.enabled"  and prop["value"].lower() == "true" for prop in ruleset["properties"])
+            ]
             if not filtered_rulesets:
                 continue
             
