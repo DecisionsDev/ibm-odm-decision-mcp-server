@@ -17,7 +17,7 @@ import json
 from collections import defaultdict
 import requests
 import jsonref
-from .DecisionServiceDescription import DecisionServiceDescription
+from decision_mcp_server.DecisionServiceDescription import DecisionServiceDescription
 from mcp.server.mcpserver.exceptions import ToolError
 class DecisionServerManager:
     """
