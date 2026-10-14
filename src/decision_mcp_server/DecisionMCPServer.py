@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import asyncio
 import json
 from typing import Optional
 from mcp.server.mcpserver.context import Context
@@ -109,7 +110,7 @@ class DecisionMCPServer:
         decisionServices = self.manager.generate_tools_format(rulesets)
         return decisionServices
 
-    def update_tool(self, tool_name:str) -> None:
+    async def update_tool(self, tool_name:str, context:Context) -> None:
         if singleItem_decisionServiceList := self.get_decisionServices(self.repository[tool_name].ruleset):
             # the ruleset still exists and its highest version is different
             decisionService = singleItem_decisionServiceList.pop()
@@ -117,6 +118,9 @@ class DecisionMCPServer:
                 # let's use this other version as its inputs are the same (and so it will accept what the MCP client sends)
                 self.repository[tool_name] = decisionService
                 self.logger.info(f"Updating tool '{tool_name}' to use the ruleset '{decisionService.rulesetPath}'")
+            else:
+                asyncio.create_task(context.notify_tools_changed())
+                self.logger.info(f"Notify clients that tools need updating: the tool '{tool_name}' now expects different inputs")
 
     async def list_tools(self) -> list[Tool]:
         self.logger.info("Listing ODM tools")
@@ -126,6 +130,7 @@ class DecisionMCPServer:
                                                  runtime_credentials=self.runtime_credentials)
             
         decisionServices = self.get_decisionServices()
+        self.repository = {}
         tools = []
         for decisionService in decisionServices:   
             tool_info = decisionService.tool_description
@@ -139,7 +144,7 @@ class DecisionMCPServer:
             raise ToolError(f"Unknown tool: {name}")
 
         # check if the current highest version of the ruleset has changed, and if it is compatible
-        self.update_tool(name)
+        await self.update_tool(name, context)
 
         self.logger.debug(f"Calling tool: {name} with arguments: {arguments}")
         # Ensure manager is initialized before using it

@@ -325,7 +325,7 @@ class DecisionServerManager:
         if response.status_code == 200:
             return response.json()
         elif response.status_code == 404:
-            raise ToolError(f"Unknown tool: {name}")
+            raise ToolError(f"Ruleset not found. The list of tools needs to be updated.")
         else:
             err = response.content.decode('utf-8')
             self.logger.error(f"Request error, status: {response.status_code}, error: {err}")
