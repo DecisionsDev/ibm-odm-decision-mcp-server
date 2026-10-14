@@ -438,16 +438,16 @@ def test_extract_highest_version_rulesets_agent_enabled():
     print(result)
     # Verify only rulesets with agent.enabled=true (case-insensitive) are included
     assert len(result) == 2
-    assert "app1ruleset1" in result
-    assert "app2ruleset3" in result
+    assert "app1/ruleset1" in result
+    assert "app2/ruleset3" in result
     
     # Verify rulesets with agent.enabled=false, missing agent.enabled, or non-standard values are excluded
-    assert "app1ruleset2" not in result
-    assert "app2ruleset4" not in result
-    assert "app3ruleset5" not in result
+    assert "app1/ruleset2" not in result
+    assert "app2/ruleset4" not in result
+    assert "app3/ruleset5" not in result
 
-    # verify that the version of app1ruleset1 is 1.10 not 1.9
-    assert result["app1ruleset1"]["version"] == "1.10"
+    # verify that the version of app1/ruleset1 is 1.10 not 1.9
+    assert result["app1/ruleset1"]["version"] == "1.10"
 
 # Run the tests
 if __name__ == '__main__':

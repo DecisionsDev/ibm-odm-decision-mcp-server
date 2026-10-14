@@ -85,6 +85,39 @@ class DecisionMCPServer:
             return str(self.repository[name].__dict__)
         raise ValueError(f"DecisionService not found: {name}")
 
+    def get_decisionServices(self, ruleset:dict|None = None) -> list[DecisionServiceDescription]:
+        try:
+            rulesets = self.manager.fetch_rulesets(ruleset)
+        except Exception as e:
+            if ruleset:
+                # the request to the RES console (to find the highest version of the ruleset) failed
+                # let's keep using the same ruleset
+                rulesets  = {}
+            else:
+                # throw the exception as we are listing all the tools
+                raise e
+
+        if ruleset:
+            # check if the ruleset still exist, and if its highest version is different
+            if (key:=self.manager.ruleset_key(ruleset)) in rulesets and rulesets[key]['id'] != ruleset['id']:
+                # from all the rulesets returned by fetch_rulesets, keep only 'ruleset'
+                rulesets = { key : rulesets[key] }
+            else:
+                # no need to collect further information
+                rulesets  = {}
+
+        decisionServices = self.manager.generate_tools_format(rulesets)
+        return decisionServices
+
+    def update_tool(self, tool_name:str) -> None:
+        if singleItem_decisionServiceList := self.get_decisionServices(self.repository[tool_name].ruleset):
+            # the ruleset still exists and its highest version is different
+            decisionService = singleItem_decisionServiceList.pop()
+            if decisionService.tool_description.input_schema == self.repository[tool_name].tool_description.input_schema:
+                # let's use this other version as its inputs are the same (and so it will accept what the MCP client sends)
+                self.repository[tool_name] = decisionService
+                self.logger.info(f"Updating tool '{tool_name}' to use the ruleset '{decisionService.rulesetPath}'")
+
     async def list_tools(self) -> list[Tool]:
         self.logger.info("Listing ODM tools")
         # Ensure manager is initialized before using it
@@ -92,10 +125,9 @@ class DecisionMCPServer:
             self.manager = DecisionServerManager(console_credentials=self.console_credentials, 
                                                  runtime_credentials=self.runtime_credentials)
             
-        rulesets = self.manager.fetch_rulesets()
-        extractedTools = self.manager.generate_tools_format(rulesets)
+        decisionServices = self.get_decisionServices()
         tools = []
-        for decisionService in extractedTools:   
+        for decisionService in decisionServices:   
             tool_info = decisionService.tool_description
             tools.append(tool_info)
             self.repository[decisionService.tool_name] = decisionService
@@ -106,7 +138,10 @@ class DecisionMCPServer:
             self.logger.error("Tool not found: %s", name)
             raise ToolError(f"Unknown tool: {name}")
 
-        self.logger.info("Invoking decision service for tool: %s with arguments: %s", name, arguments)
+        # check if the current highest version of the ruleset has changed, and if it is compatible
+        self.update_tool(name)
+
+        self.logger.debug(f"Calling tool: {name} with arguments: {arguments}")
         # Ensure manager is initialized before using it
         if self.manager is None:
             self.manager = DecisionServerManager(console_credentials=self.console_credentials, 

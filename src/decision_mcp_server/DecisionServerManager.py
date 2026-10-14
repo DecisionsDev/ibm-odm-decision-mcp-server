@@ -131,10 +131,13 @@ class DecisionServerManager:
 
             # Get the highest version ruleset
             highest_version_ruleset = sorted_rulesets[0][1]
-            highest_version_rulesets[str(ruleapp_name)+str(ruleset_name)] = highest_version_ruleset
+            highest_version_rulesets[self.ruleset_key(highest_version_ruleset)] = highest_version_ruleset
 
         return highest_version_rulesets
     
+    def ruleset_key(self, ruleset:dict) -> str:
+        l : list[str] = ruleset["id"].split("/")
+        return l[0] + "/" + l[2] # ruleapp/ruleset
 
     def to_plain_dict(self,obj):
         """
@@ -175,16 +178,16 @@ class DecisionServerManager:
         Returns:
             dict: The input schema of the ruleset.
         """
+        error = ""
         try:
             # Make the GET request with headers
-            self.logger.info("Retrieve OpenAPI schema at "+self.runtime_credentials.odm_url+'/rest/'+ruleset["id"]+ '/openapi')
+            path = '/rest/'+ruleset["id"]+ '/openapi?format=json'
             session = self.runtime_credentials.get_session()
-            response = session.get(self.runtime_credentials.odm_url+'/rest/'+ruleset["id"]+ '/openapi?format=json', headers=session.headers, verify=self.runtime_credentials.cacert)
+            response = session.get(self.runtime_credentials.odm_url+path, headers=session.headers, verify=self.runtime_credentials.cacert)
+            self.logger.info(f"{self.runtime_credentials.odm_url}{path} {response.status_code} {len(response.text)}")
 
             # Check if the request was successful
             if response.status_code == 200:
-                self.logger.info("Request successful!")
-
                 # Resolve $ref references
                 jsonopenApiData = jsonref.JsonRef.replace_refs(json.loads(response.text))
 
@@ -196,19 +199,18 @@ class DecisionServerManager:
                 # Convert to plain JSON-serializable dict
                 return self.to_plain_dict(inputParameterSchema)
             else:
-                self.logger.error("Request failed with status code: %s", response.status_code)
-                self.logger.error("Response: %s", response.text)
-                raise ToolError(f"{response.text} from {self.runtime_credentials.odm_url}/rest/{ruleset["id"]}/openapi")
+                error = f"Request to {self.runtime_credentials.odm_url}{path} failed (HTTP code {response.status_code}) - Response: {response.text}"
 
         except requests.exceptions.RequestException as e:
-            self.logger.error("An error occurred: %s", e)
-            raise ToolError(f"{str(e)} from {self.runtime_credentials.odm_url}/rest/{ruleset["id"]}/openapi")
+            error = f"Request to {self.runtime_credentials.odm_url}{path} failed: {str(e)}"
         except json.JSONDecodeError as e:
-            self.logger.error("Failed to decode JSON response.")
-            raise ToolError(f"{str(e)} - Error parsing response from {self.runtime_credentials.odm_url}/rest/{ruleset["id"]}/openapi")
+            error = f"Failed to decode the JSON response from {self.runtime_credentials.odm_url}{path}"
         finally:
             self.runtime_credentials.cleanup()
         
+        if error:
+            self.logger.error(error)
+            raise ToolError(error)
 
     def get_input_schema(self, ruleset):
 
@@ -249,24 +251,28 @@ class DecisionServerManager:
             formatted_tools.append(formatted_ruleset)
         return formatted_tools
 
-    def fetch_rulesets(self):
+    def fetch_rulesets(self, ruleset:dict|None = None):
         """
         :no-index:
         Fetches rulesets from the decision server and extracts the highest version rulesets.
-
+        If 'ruleset' is not empty, fetches only the rulesets of the same ruleapp as 'ruleset'.
         Returns:
             dict: A dictionary containing the highest version rulesets, or None if the request fails.
         """
+        error = ""
         try:
             # Make the GET request with headers
-            self.logger.info(self.console_credentials.odm_url+'/api/v1/ruleapps')
+            path = '/api/v1/ruleapps'
+            if ruleset:
+                ruleapp = ruleset["id"].split("/")[0]
+                path += '/' + ruleapp
+
             session = self.console_credentials.get_session()
-            response = session.get(self.console_credentials.odm_url+'/api/v1/ruleapps', headers=session.headers, verify=self.console_credentials.cacert)
+            response = session.get(self.console_credentials.odm_url+path, headers=session.headers, verify=self.console_credentials.cacert)
+            self.logger.info(f"{self.console_credentials.odm_url}{path} {response.status_code} {len(response.text)}")
 
             # Check if the request was successful
             if response.status_code == 200:
-                self.logger.info("Request successful!")
-
                 # Parse and display the JSON response
                 data = response.json()
                 # Extract the highest version rulesets
@@ -274,18 +280,19 @@ class DecisionServerManager:
 
                 return highest_version_rulesets
             else:
-                self.logger.error("Request failed with status code: %s", response.status_code)
-                self.logger.error("Response: %s", response.text)
-                raise ToolError(f"Unexpected response {response.status_code} from {self.console_credentials.odm_url}/api/v1/ruleapps")
+                error = f"Request to {self.console_credentials.odm_url}{path} failed (HTTP code {response.status_code}) - Response: {response.text}"
 
         except requests.exceptions.RequestException as e:
-            self.logger.error("An error occurred: %s", e)
-            raise ToolError(f"Unexpected response {str(e)} while fetching {self.console_credentials.odm_url}/api/v1/ruleapps")
+            error = f"Request to {self.console_credentials.odm_url}{path} failed: {str(e)}"
         except json.JSONDecodeError:
-            self.logger.error("Failed to decode JSON response.")
-            raise ToolError(f"Failed to decode the JSON response from {self.console_credentials.odm_url}/api/v1/ruleapps")
+            error = f"Failed to decode the JSON response from {self.console_credentials.odm_url}{path}"
         finally:
             self.console_credentials.cleanup()
+        
+        if error:
+            self.logger.error(error)
+            raise ToolError(error)
+
 
     def invokeDecisionService(self, rulesetPath, decisionInputs, trace=True):
         """
@@ -307,9 +314,10 @@ class DecisionServerManager:
             params.update(self.trace)  # Add trace information to params
 
         try:
+            path = '/rest'+rulesetPath
             session = self.runtime_credentials.get_session()
-            response = session.post(self.runtime_credentials.odm_url+'/rest'+rulesetPath, headers=session.headers,
-                                json=params)
+            response = session.post(self.runtime_credentials.odm_url+path, headers=session.headers, json=params)
+            self.logger.info(f"{self.runtime_credentials.odm_url}{path} {response.status_code} {len(response.text)}")
         finally:
             self.runtime_credentials.cleanup()
 

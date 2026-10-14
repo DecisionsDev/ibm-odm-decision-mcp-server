@@ -356,7 +356,7 @@ class DummyTool:
     def __init__(self, name, description, input_schema):
         self.name = name
         self.description = description
-        self.inputSchema = input_schema
+        self.input_schema = input_schema
 
 # Mock the types module
 @pytest.fixture
@@ -555,7 +555,8 @@ async def test_call_tool_with_traces_enabled(server_with_traces_enabled):
     
     # Add tool to repository
     server_with_traces_enabled.repository[tool_name] = Mock(rulesetPath="/test/path")
-    
+    server_with_traces_enabled.manager.fetch_rulesets.return_value = {}
+
     # Execute
     result = await server_with_traces_enabled.call_tool(tool_name, arguments, {})
     
@@ -580,7 +581,8 @@ async def test_call_tool_with_traces_disabled(server_with_traces_disabled):
     
     # Add tool to repository
     server_with_traces_disabled.repository[tool_name] = Mock(rulesetPath="/test/path")
-    
+    server_with_traces_disabled.manager.fetch_rulesets.return_value = {}
+
     # Execute
     result = await server_with_traces_disabled.call_tool(tool_name, arguments, {})
     
@@ -755,3 +757,272 @@ def test_server_start_with_sse_transport():
             port=8080,
             streamable_http_path="/sse-endpoint"
         )
+
+
+# ── Automatic tool update tests ────────────────────────────────────────────────
+# These tests cover the update_tool / get_decisionServices feature that
+# automatically promotes a tool to the currently highest ruleset version
+# whenever call_tool is invoked.
+
+def _make_server():
+    """Return a DecisionMCPServer with a mocked manager."""
+    credentials = Credentials(odm_url="http://test:9060/res", username="test", password="test")
+    server = DecisionMCPServer(
+        console_credentials=credentials,
+        runtime_credentials=credentials,
+        traces_dir=None,
+        trace_enable=False,
+        trace_maxsize=10,
+    )
+    server.manager = Mock()
+    return server
+
+
+def _make_decision_service(ruleset_id, version, input_schema=None):
+    """Build a minimal DecisionServiceDescription-like Mock."""
+    if input_schema is None:
+        input_schema = {"type": "object", "properties": {"input": {"type": "string"}}}
+    ruleset = {
+        "id": ruleset_id,
+        "version": version,
+        "displayName": "Test Ruleset",
+        "description": "Test",
+        "properties": [
+            {"id": "ruleset.status", "value": "enabled"},
+            {"id": "agent.enabled", "value": "true"},
+        ],
+    }
+    from mcp_types import Tool
+    ds = Mock()
+    ds.ruleset = ruleset
+    ds.rulesetPath = "/" + ruleset_id
+    ds.tool_name = "my_tool"
+    ds.tool_description = Tool(name="my_tool", description="Test", inputSchema=input_schema)
+    return ds
+
+
+# ── get_decisionServices ───────────────────────────────────────────────────────
+
+def test_get_decisionServices_no_ruleset_returns_all_tools(server, mock_manager):
+    """When no ruleset filter is given (list_tools path) all formatted tools are returned."""
+    mock_manager.fetch_rulesets.return_value = {"app/rs": {"id": "app/1.0/rs"}}
+    mock_manager.generate_tools_format.return_value = [Mock(tool_name="tool1")]
+
+    result = server.get_decisionServices()
+
+    mock_manager.fetch_rulesets.assert_called_once_with(None)
+    mock_manager.generate_tools_format.assert_called_once()
+    assert len(result) == 1
+
+
+def test_get_decisionServices_higher_version_found():
+    """A higher-version ruleset is detected and its DecisionServiceDescription returned."""
+    server = _make_server()
+    current_ruleset = {"id": "app/1.0/rs", "version": "1.0"}
+    higher_ruleset  = {"id": "app/2.0/rs", "version": "2.0"}
+    rulesets_response = {"app/rs": higher_ruleset}
+
+    server.manager.fetch_rulesets.return_value = rulesets_response
+    server.manager.ruleset_key.return_value = "app/rs"
+    new_ds = Mock(tool_name="my_tool")
+    server.manager.generate_tools_format.return_value = [new_ds]
+
+    result = server.get_decisionServices(current_ruleset)
+
+    # generate_tools_format must receive only the higher-version ruleset
+    server.manager.generate_tools_format.assert_called_once_with({"app/rs": higher_ruleset})
+    assert result == [new_ds]
+
+
+def test_get_decisionServices_same_version_no_update():
+    """When the server still returns the same ruleset id, no update is needed."""
+    server = _make_server()
+    current_ruleset = {"id": "app/1.0/rs", "version": "1.0"}
+    rulesets_response = {"app/rs": current_ruleset}   # same id → no higher version
+
+    server.manager.fetch_rulesets.return_value = rulesets_response
+    server.manager.ruleset_key.return_value = "app/rs"
+    server.manager.generate_tools_format.return_value = []
+
+    result = server.get_decisionServices(current_ruleset)
+
+    # generate_tools_format must be called with empty dict (nothing to update)
+    server.manager.generate_tools_format.assert_called_once_with({})
+    assert result == []
+
+
+def test_get_decisionServices_ruleset_removed_from_server():
+    """When the ruleset no longer exists on the server, no update is performed."""
+    server = _make_server()
+    current_ruleset = {"id": "app/1.0/rs", "version": "1.0"}
+    rulesets_response = {}   # ruleset has been deleted
+
+    server.manager.fetch_rulesets.return_value = rulesets_response
+    server.manager.ruleset_key.return_value = "app/rs"
+    server.manager.generate_tools_format.return_value = []
+
+    result = server.get_decisionServices(current_ruleset)
+
+    server.manager.generate_tools_format.assert_called_once_with({})
+    assert result == []
+
+
+def test_get_decisionServices_fetch_failure_returns_empty():
+    """If fetch_rulesets raises while checking a specific ruleset, the exception is
+    silently absorbed and an empty list is returned (keep using the current ruleset)."""
+    server = _make_server()
+    current_ruleset = {"id": "app/1.0/rs", "version": "1.0"}
+
+    server.manager.fetch_rulesets.side_effect = Exception("RES console unreachable")
+    server.manager.generate_tools_format.return_value = []
+
+    result = server.get_decisionServices(current_ruleset)
+
+    # generate_tools_format must be called with empty dict (fallback)
+    server.manager.generate_tools_format.assert_called_once_with({})
+    assert result == []
+
+
+def test_get_decisionServices_fetch_failure_with_no_ruleset_propagates():
+    """If fetch_rulesets raises during list_tools (no ruleset filter), the exception
+    must propagate so the caller knows the server is unreachable."""
+    server = _make_server()
+
+    server.manager.fetch_rulesets.side_effect = Exception("RES console unreachable")
+
+    with pytest.raises(Exception, match="RES console unreachable"):
+        server.get_decisionServices()
+
+
+# ── update_tool ────────────────────────────────────────────────────────────────
+
+def test_update_tool_promotes_compatible_higher_version():
+    """When a higher version with the same input schema is found, the repository
+    entry must be replaced with the new DecisionServiceDescription."""
+    server = _make_server()
+    schema = {"type": "object", "properties": {"loan": {"type": "number"}}}
+
+    old_ds = _make_decision_service("app/1.0/rs", "1.0", schema)
+    server.repository["my_tool"] = old_ds
+
+    new_ds = _make_decision_service("app/2.0/rs", "2.0", schema)
+    server.manager.fetch_rulesets.return_value = {"app/rs": new_ds.ruleset}
+    server.manager.ruleset_key.return_value = "app/rs"
+    server.manager.generate_tools_format.return_value = [new_ds]
+
+    server.update_tool("my_tool")
+
+    assert server.repository["my_tool"] is new_ds
+    assert server.repository["my_tool"].rulesetPath == "/app/2.0/rs"
+
+
+def test_update_tool_does_not_promote_incompatible_schema():
+    """When the higher version has a different input schema, the tool must NOT be
+    updated — the MCP client would be sending inputs the new version doesn't expect."""
+    server = _make_server()
+    old_schema = {"type": "object", "properties": {"amount": {"type": "number"}}}
+    new_schema  = {"type": "object", "properties": {"loanAmount": {"type": "number"}}}
+
+    old_ds = _make_decision_service("app/1.0/rs", "1.0", old_schema)
+    server.repository["my_tool"] = old_ds
+
+    new_ds = _make_decision_service("app/2.0/rs", "2.0", new_schema)
+    server.manager.fetch_rulesets.return_value = {"app/rs": new_ds.ruleset}
+    server.manager.ruleset_key.return_value = "app/rs"
+    server.manager.generate_tools_format.return_value = [new_ds]
+
+    server.update_tool("my_tool")
+
+    # Repository must still point to the old version
+    assert server.repository["my_tool"] is old_ds
+
+
+def test_update_tool_no_higher_version_leaves_repository_unchanged():
+    """When no higher version is available, the repository entry stays the same."""
+    server = _make_server()
+    schema = {"type": "object"}
+    current_ds = _make_decision_service("app/1.0/rs", "1.0", schema)
+    server.repository["my_tool"] = current_ds
+
+    # fetch_rulesets returns same id → get_decisionServices returns []
+    server.manager.fetch_rulesets.return_value = {"app/rs": current_ds.ruleset}
+    server.manager.ruleset_key.return_value = "app/rs"
+    server.manager.generate_tools_format.return_value = []
+
+    server.update_tool("my_tool")
+
+    assert server.repository["my_tool"] is current_ds
+
+
+# ── call_tool integration with update_tool ────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_call_tool_uses_updated_ruleset_path():
+    """call_tool must invoke the decision service using the promoted ruleset path
+    when update_tool finds a compatible higher version."""
+    server = _make_server()
+    schema = {"type": "object"}
+
+    old_ds = _make_decision_service("app/1.0/rs", "1.0", schema)
+    server.repository["my_tool"] = old_ds
+
+    new_ds = _make_decision_service("app/2.0/rs", "2.0", schema)
+    server.manager.fetch_rulesets.return_value = {"app/rs": new_ds.ruleset}
+    server.manager.ruleset_key.return_value = "app/rs"
+    server.manager.generate_tools_format.return_value = [new_ds]
+    server.manager.invokeDecisionService.return_value = {"result": "ok"}
+
+    result = await server.call_tool("my_tool", {"input": "x"}, {})
+
+    # The invocation must use the new (promoted) path
+    server.manager.invokeDecisionService.assert_called_once_with(
+        rulesetPath="/app/2.0/rs",
+        decisionInputs={"input": "x"},
+    )
+    assert result.is_error is False
+
+
+@pytest.mark.asyncio
+async def test_call_tool_keeps_original_ruleset_when_no_update():
+    """call_tool must invoke the decision service using the original ruleset path
+    when no higher version is available."""
+    server = _make_server()
+    schema = {"type": "object"}
+
+    current_ds = _make_decision_service("app/1.0/rs", "1.0", schema)
+    server.repository["my_tool"] = current_ds
+
+    # No higher version
+    server.manager.fetch_rulesets.return_value = {"app/rs": current_ds.ruleset}
+    server.manager.ruleset_key.return_value = "app/rs"
+    server.manager.generate_tools_format.return_value = []
+    server.manager.invokeDecisionService.return_value = {"result": "ok"}
+
+    await server.call_tool("my_tool", {}, {})
+
+    server.manager.invokeDecisionService.assert_called_once_with(
+        rulesetPath="/app/1.0/rs",
+        decisionInputs={},
+    )
+
+
+@pytest.mark.asyncio
+async def test_call_tool_keeps_original_ruleset_when_fetch_fails():
+    """If the RES console is unreachable during update_tool, call_tool must fall back
+    gracefully and still invoke the original ruleset path."""
+    server = _make_server()
+    schema = {"type": "object"}
+
+    current_ds = _make_decision_service("app/1.0/rs", "1.0", schema)
+    server.repository["my_tool"] = current_ds
+
+    server.manager.fetch_rulesets.side_effect = Exception("timeout")
+    server.manager.generate_tools_format.return_value = []
+    server.manager.invokeDecisionService.return_value = {"result": "ok"}
+
+    await server.call_tool("my_tool", {}, {})
+
+    server.manager.invokeDecisionService.assert_called_once_with(
+        rulesetPath="/app/1.0/rs",
+        decisionInputs={},
+    )

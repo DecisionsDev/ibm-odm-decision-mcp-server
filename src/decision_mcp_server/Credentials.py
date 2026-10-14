@@ -298,7 +298,8 @@ class Credentials:
         Creates and returns a requests Session object configured with SSL settings
         """ 
         session = requests.Session()
-        self.logger.info("Verify SSL: " + str(self.verify_ssl))
+        if not self.verify_ssl:
+            self.logger.info("Verify SSL: False")
         if self.odm_url.startswith('https') and self.verify_ssl:
             session.verify = True
             session.mount('https://', CustomHTTPAdapter(certfile = self.ssl_cert_path, verify_ssl_hostname = self.verify_ssl_hostname))
