@@ -287,7 +287,7 @@ class DecisionServerManager:
         finally:
             self.console_credentials.cleanup()
 
-    def invokeDecisionService(self, rulesetPath, decisionInputs, trace=True):
+    def invokeDecisionService(self, rulesetPath, decisionInputs, trace=True, runtime_credentials=None):
         """
         :no-index:
         Invokes a decision service with the provided ruleset path and decision inputs.
@@ -295,23 +295,27 @@ class DecisionServerManager:
         Args:
             rulesetPath (str): The path to the ruleset.
             decisionInputs (dict): A dictionary of decision inputs.
+            trace (bool): Whether to include trace information in the request.
+            runtime_credentials: Optional credentials override. When provided, the request
+                is sent to the URL defined in these credentials instead of the default
+                runtime URL. Used to route specific ruleset paths to dedicated servers.
 
         Returns:
             dict: The response from the decision service, or an error message if the request fails.
         """
-        # POST with basic auth        
-        headers = {'Content-type': 'application/json', 'Accept': 'text/plain'}
-        
+        # Use dedicated credentials if provided, otherwise fall back to the default runtime credentials
+        effective_credentials = runtime_credentials if runtime_credentials is not None else self.runtime_credentials
+
         params = {**decisionInputs}
         if trace:
             params.update(self.trace)  # Add trace information to params
 
         try:
-            session = self.runtime_credentials.get_session()
-            response = session.post(self.runtime_credentials.odm_url+'/rest'+rulesetPath, headers=session.headers,
+            session = effective_credentials.get_session()
+            response = session.post(effective_credentials.odm_url+'/rest'+rulesetPath, headers=session.headers,
                                 json=params)
         finally:
-            self.runtime_credentials.cleanup()
+            effective_credentials.cleanup()
 
         # check response
         if response.status_code == 200:
