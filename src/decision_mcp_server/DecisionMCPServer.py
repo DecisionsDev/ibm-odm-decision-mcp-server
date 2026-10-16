@@ -401,7 +401,7 @@ def main():
     logging.info(f"Running Python {sys.version_info}. Logging level set to: {logging.getLevelName(logging_level)}")
 
     # suppress access logs originating from probes when running in a k8s pod
-    running_in_pod = os.getenv("RUNNING_IN_POD", "False") != "False"
+    running_in_pod = os.getenv("RUNNING_IN_POD", "False") == "True"
     if running_in_pod and args.transport == "streamable-http":
         import uvicorn.config as _uvicorn_config
         probe_filter = _SuppressAccessLogForProbes(local_ip=socket.gethostbyname(socket.gethostname()))
