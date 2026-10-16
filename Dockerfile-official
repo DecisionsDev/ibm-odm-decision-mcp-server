@@ -46,6 +46,7 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 
 FROM registry.access.redhat.com/ubi10-minimal
 ARG VERSION
+ARG LICENSES_DIR
 LABEL org.opencontainers.image.authors="Laurent GRATEAU <laurent.grateau@fr.ibm.com>"
 LABEL name="IBM ODM Decision MCP Server"
 LABEL vendor="IBM"
@@ -77,6 +78,7 @@ COPY --from=builder --chown=501:501 /python /python
 COPY --from=builder --chown=501:501 /app/ /app/
 COPY --from=builder --chown=501:501 /mcp-certs/trusted-odm/tls.crt /mcp-certs/trusted-odm/tls.crt
 COPY                --chown=501:501 /container/script /script
+COPY                --chown=501:501 /${LICENSES_DIR}  /licenses
 
 ENV PATH="/app/.venv/bin:$PATH"
 ENV TRANSPORT=streamable-http
