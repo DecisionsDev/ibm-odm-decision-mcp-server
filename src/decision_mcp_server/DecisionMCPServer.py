@@ -17,7 +17,8 @@ from typing import Optional
 from mcp.server.mcpserver.context import Context
 from mcp_types import Tool, Resource, CallToolResult, TextContent
 from mcp.server import MCPServer
-from mcp.server.mcpserver.exceptions import ToolError
+from mcp.server.mcpserver.exceptions import ToolError, ResourceError, ResourceNotFoundError
+from mcp.server.lowlevel.helper_types import ReadResourceContents
 from pydantic import AnyUrl
 import logging
 import urllib3
@@ -108,15 +109,15 @@ class DecisionMCPServer:
             for name in self.repository.keys()
         ]
 
-    async def read_resource(self, uri: AnyUrl) -> str:
+    async def read_resource(self, uri: AnyUrl | str, context: Context | None = None) -> list[ReadResourceContents]:
+        uri = AnyUrl(str(uri))
         if uri.scheme != "decisionservice":
-            raise ValueError(f"Unsupported URI scheme: {uri.scheme}")
+            raise ResourceError(f"Unsupported URI scheme: {uri.scheme}")
 
-        name = uri.path
-        if name is not None:
-            name = name.lstrip("/")
-            return str(self.repository[name].__dict__)
-        raise ValueError(f"DecisionService not found: {name}")
+        name = (uri.path or "").lstrip("/")
+        if name not in self.repository:
+            raise ResourceNotFoundError(f"DecisionService not found: {name}")
+        return [ReadResourceContents(content=str(self.repository[name].__dict__), mime_type="text/plain")]
 
     async def list_tools(self) -> list[Tool]:
         self.logger.info("Listing ODM tools")
