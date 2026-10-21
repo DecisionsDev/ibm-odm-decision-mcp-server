@@ -141,7 +141,7 @@ This step is optional and only needed if you choose to run ODM as a container on
            "--username", "odmAdmin"
          ],
          "env": {
-           "PASSWORD": "odmAdmin"
+           "ODM_PASSWORD": "odmAdmin"
          }
        }
      }

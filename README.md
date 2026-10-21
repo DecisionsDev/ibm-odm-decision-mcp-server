@@ -398,7 +398,7 @@ When authorization is required (to assess the right to access to the service (RE
   "--username",      "SERVICE_ACCOUNT"
 ],
 "env": {
-  "PASSWORD":       "SERVICE_ACCOUNT_PASSWORD",
+  "ODM_PASSWORD":   "SERVICE_ACCOUNT_PASSWORD",
   "MTLS_KEY_PATH":  "MTLS_PRIVATE_KEY_FILENAME",
   "MTLS_CERT_PATH": "MTLS_CERTIFICATE_FILENAME"
 }
