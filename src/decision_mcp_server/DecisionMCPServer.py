@@ -136,6 +136,9 @@ class DecisionMCPServer:
         return tools
 
     async def call_tool(self, name: str, arguments: dict | None, context: Context) -> CallToolResult:
+        if not self.repository:
+            await self.list_tools()
+
         if self.repository.get(name) is None:
             self.logger.error("Tool not found: %s", name)
             raise ToolError(f"Unknown tool: {name}")
