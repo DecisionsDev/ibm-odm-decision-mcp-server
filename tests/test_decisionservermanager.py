@@ -452,3 +452,43 @@ def test_extract_highest_version_rulesets_agent_enabled():
 # Run the tests
 if __name__ == '__main__':
     pytest.main()
+
+
+def _mock_credentials(cacert):
+    from unittest.mock import MagicMock
+    creds = MagicMock()
+    creds.odm_url = 'https://odm.example.com/res'
+    creds.cacert = cacert
+    return creds
+
+
+def test_fetch_rulesets_passes_cacert_to_session_get():
+    """fetch_rulesets must pass the console credentials' CA bundle (certifi by default) as verify=."""
+    import certifi
+    console = _mock_credentials(certifi.where())
+    response = console.get_session.return_value.get.return_value
+    response.status_code = 200
+    response.json.return_value = []
+    manager = DecisionServerManager(console_credentials=console, runtime_credentials=_mock_credentials(None))
+
+    manager.fetch_rulesets()
+
+    kwargs = console.get_session.return_value.get.call_args.kwargs
+    assert kwargs['verify'] == certifi.where()
+
+
+def test_get_ruleset_openapi_passes_cacert_to_session_get():
+    """get_ruleset_openapi must pass the runtime credentials' CA bundle as verify=."""
+    import certifi
+    from mcp.server.mcpserver.exceptions import ToolError
+    runtime = _mock_credentials(certifi.where())
+    response = runtime.get_session.return_value.get.return_value
+    response.status_code = 404
+    response.text = 'not found'
+    manager = DecisionServerManager(console_credentials=_mock_credentials(None), runtime_credentials=runtime)
+
+    with pytest.raises(ToolError):
+        manager.get_ruleset_openapi({"id": "app/1.0/rs/1.0"})
+
+    kwargs = runtime.get_session.return_value.get.call_args.kwargs
+    assert kwargs['verify'] == certifi.where()

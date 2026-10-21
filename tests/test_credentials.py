@@ -903,6 +903,83 @@ def test_create_credentials_no_ssl_cert_path():
     console_cred, _ = create_credentials(args)
     assert console_cred.cacert == certifi.where()
 
+def test_create_credentials_no_ssl_cert_path_runtime():
+    """Runtime credentials must also fall back to certifi."""
+    import certifi
+    args = _make_args(ssl_cert_path=None)
+    _, runtime_cred = create_credentials(args)
+    assert runtime_cred.cacert == certifi.where()
+
+def test_ssl_certifi_import_error():
+    """If certifi is unavailable, Credentials construction fails with ImportError."""
+    with patch.dict(sys.modules, {'certifi': None}):
+        with pytest.raises(ImportError):
+            Credentials(
+                odm_url="https://localhost:9060/res",
+                username="user",
+                password="pass",
+                verify_ssl=True,
+            )
+
+def test_certifi_not_imported_when_cert_path_given():
+    """With an explicit ssl_cert_path, certifi must not be needed."""
+    with patch.dict(sys.modules, {'certifi': None}):
+        cred = Credentials(
+            odm_url="https://localhost:9060/res",
+            username="user",
+            password="pass",
+            verify_ssl=True,
+            ssl_cert_path="/path/to/ca.pem",
+        )
+    assert cred.cacert == "/path/to/ca.pem"
+
+def _openid_token_response():
+    response = MagicMock()
+    response.json.return_value = {'access_token': 'tok'}
+    return response
+
+def test_token_request_uses_certifi_bundle():
+    """The OpenID token POST must verify against the certifi bundle by default."""
+    import certifi
+    cred = Credentials(
+        odm_url="https://localhost:9060/res",
+        token_url="https://idp.example.com/token",
+        client_id="cid",
+        client_secret="secret",
+        verify_ssl=True,
+    )
+    with patch('decision_mcp_server.Credentials.requests.post', return_value=_openid_token_response()) as mock_post:
+        headers = cred.get_auth()
+    assert headers['Authorization'] == 'Bearer tok'
+    assert mock_post.call_args.kwargs['verify'] == certifi.where()
+
+def test_token_request_uses_custom_cert_path():
+    """The OpenID token POST must verify against ssl_cert_path when provided."""
+    cred = Credentials(
+        odm_url="https://localhost:9060/res",
+        token_url="https://idp.example.com/token",
+        client_id="cid",
+        client_secret="secret",
+        verify_ssl=True,
+        ssl_cert_path="/path/to/ca.pem",
+    )
+    with patch('decision_mcp_server.Credentials.requests.post', return_value=_openid_token_response()) as mock_post:
+        cred.get_auth()
+    assert mock_post.call_args.kwargs['verify'] == "/path/to/ca.pem"
+
+def test_token_request_verify_false():
+    """The OpenID token POST must not verify when verify_ssl is False."""
+    cred = Credentials(
+        odm_url="https://localhost:9060/res",
+        token_url="https://idp.example.com/token",
+        client_id="cid",
+        client_secret="secret",
+        verify_ssl=False,
+    )
+    with patch('decision_mcp_server.Credentials.requests.post', return_value=_openid_token_response()) as mock_post:
+        cred.get_auth()
+    assert mock_post.call_args.kwargs['verify'] is False
+
 def test_get_auth_pkjwt_import_error():
     """Test that a missing PyJWT package raises a clear ImportError."""
     import builtins
