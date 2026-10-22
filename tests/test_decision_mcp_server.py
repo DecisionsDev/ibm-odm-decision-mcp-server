@@ -16,6 +16,7 @@ import pytest
 from unittest.mock import Mock, patch
 import os
 import argparse
+import logging
 from decision_mcp_server.DecisionMCPServer import DecisionMCPServer, parse_arguments, create_credentials
 from decision_mcp_server.Credentials import Credentials
 from decision_mcp_server.config import INSTRUCTIONS
@@ -74,6 +75,39 @@ def test_server_init_disables_urllib3_warnings():
         )
         mock_disable_warnings.assert_called_once_with()
 
+def test_server_initialization_https_valid(mock_console_credentials, mock_runtime_credentials):
+    """Test DecisionMCPServer initialization with valid HTTPS certificate and key options."""
+    server = DecisionMCPServer(
+        console_credentials=mock_console_credentials,
+        runtime_credentials=mock_runtime_credentials,
+        https_cert_path="/path/to/cert.pem",
+        https_key_path="/path/to/key.pem",
+        https_key_password="secret_password"
+    )
+    assert server.https_cert_path == "/path/to/cert.pem"
+    assert server.https_key_path == "/path/to/key.pem"
+    assert server.https_key_password == "secret_password"
+
+def test_server_initialization_https_missing_key(mock_console_credentials, mock_runtime_credentials):
+    """Test DecisionMCPServer initialization fails when cert is provided without a private key."""
+    with pytest.raises(ValueError, match="HTTPS requires both a certificate .* and a private key"):
+        DecisionMCPServer(
+            console_credentials=mock_console_credentials,
+            runtime_credentials=mock_runtime_credentials,
+            https_cert_path="/path/to/cert.pem",
+            https_key_path=None
+        )
+
+def test_server_initialization_https_missing_cert(mock_console_credentials, mock_runtime_credentials):
+    """Test DecisionMCPServer initialization fails when key is provided without a certificate."""
+    with pytest.raises(ValueError, match="HTTPS requires both a certificate .* and a private key"):
+        DecisionMCPServer(
+            console_credentials=mock_console_credentials,
+            runtime_credentials=mock_runtime_credentials,
+            https_cert_path=None,
+            https_key_path="/path/to/key.pem"
+        )
+
 # Test argument parsing
 @pytest.mark.parametrize("args,expected", [
     (
@@ -103,6 +137,14 @@ def test_server_init_disables_urllib3_warnings():
     (
         ["--mtls-cert-path", "/custom/cert/file", "--mtls-key-path", "/custom/key/file", "--mtls-key-password", "xyz-password"],
         {"mtls_cert_path": "/custom/cert/file", "mtls_key_path": "/custom/key/file", "mtls_key_password": "xyz-password"}
+    ),
+    (
+        ["--https-cert-path", "/custom/cert/file", "--https-key-path", "/custom/key/file", "--https-key-password", "xyz-password"],
+        {"https_cert_path": "/custom/cert/file", "https_key_path": "/custom/key/file", "https_key_password": "xyz-password"}
+    ),
+    (
+        ["--https_cert_path", "/custom/cert/file", "--https_key_path", "/custom/key/file", "--https_key_password", "xyz-password"],
+        {"https_cert_path": "/custom/cert/file", "https_key_path": "/custom/key/file", "https_key_password": "xyz-password"}
     ),
     (
         ["--verifyssl", "False"],
@@ -146,7 +188,7 @@ def test_server_init_disables_urllib3_warnings():
     ),
     (
         [],  # No arguments
-        {"scope": "openid", "verifyssl": "True", "trace_enable": "False", "trace_maxsize": 50, "log_level": "INFO", "transport":"stdio"}  # Default values
+        {"scope": "openid", "verifyssl": "True", "trace_enable": "False", "trace_maxsize": 50, "log_level": "INFO", "transport":"stdio", "https_cert_path": None, "https_key_path": None, "https_key_password": None}  # Default values
     ),
 ])
 def test_parse_arguments(args, expected):  # Added 'expected' parameter
@@ -154,6 +196,19 @@ def test_parse_arguments(args, expected):  # Added 'expected' parameter
         parsed_args = parse_arguments()
         for key, value in expected.items():
             assert getattr(parsed_args, key) == value
+
+def test_parse_arguments_https_env_vars():
+    """Test parsing HTTPS certificate and key configuration from environment variables."""
+    env = {
+        "HTTPS_CERT_PATH": "/env/cert.pem",
+        "HTTPS_KEY_PATH": "/env/key.pem",
+        "HTTPS_KEY_PASSWORD": "env-password",
+    }
+    with patch.dict(os.environ, env), patch('sys.argv', ['script']):
+        parsed_args = parse_arguments()
+        assert parsed_args.https_cert_path == "/env/cert.pem"
+        assert parsed_args.https_key_path == "/env/key.pem"
+        assert parsed_args.https_key_password == "env-password"
 
 # Test credentials creation
 def test_create_credentials_basic_auth():
@@ -182,7 +237,10 @@ def test_create_credentials_basic_auth():
         traces_dir=None,
         trace_enable="False",
         trace_maxsize=50,
-        log_level="INFO"
+        log_level="INFO",
+        https_cert_path=None,
+        https_key_path=None,
+        https_key_password=None,
     )
     console_credentials, runtime_credentials = create_credentials(args)
     assert console_credentials.odm_url == "http://test:9060/res"
@@ -218,7 +276,10 @@ def test_create_credentials_zen_api():
         traces_dir=None,
         trace_enable="False",
         trace_maxsize=50,
-        log_level="INFO"
+        log_level="INFO",
+        https_cert_path=None,
+        https_key_path=None,
+        https_key_password=None,
     )
     console_credentials, runtime_credentials = create_credentials(args)
     assert console_credentials.zenapikey == "test-key"
@@ -249,7 +310,10 @@ def test_create_credentials_openid():
         traces_dir=None,
         trace_enable="False",
         trace_maxsize=50,
-        log_level="INFO"
+        log_level="INFO",
+        https_cert_path=None,
+        https_key_path=None,
+        https_key_password=None,
     )
     console_credentials, runtime_credentials = create_credentials(args)
     assert console_credentials.client_id == "test-client"
@@ -289,7 +353,10 @@ def test_create_credentials_missing_basic_auth():
         traces_dir=None,
         trace_enable="False",
         trace_maxsize=50,
-        log_level="INFO"
+        log_level="INFO",
+        https_cert_path=None,
+        https_key_path=None,
+        https_key_password=None,
     )
     with pytest.raises(ValueError) as exc_info:
         create_credentials(args)
@@ -326,7 +393,10 @@ def test_ssl_verification(verify_ssl, expected):
         traces_dir=None,
         trace_enable="False",
         trace_maxsize=50,
-        log_level="INFO"
+        log_level="INFO",
+        https_cert_path=None,
+        https_key_path=None,
+        https_key_password=None,
     )
     console_credentials, runtime_credentials = create_credentials(args)
     assert console_credentials.verify_ssl == expected
@@ -700,7 +770,8 @@ def test_server_start_with_streamable_http_transport():
             transport="streamable-http",
             host="127.0.0.1",
             port=3001,
-            streamable_http_path="/custom-path"
+            streamable_http_path="/custom-path",
+            stateless_http=True,
         )
         
         # Verify manager was initialized
@@ -754,7 +825,136 @@ def test_server_start_with_sse_transport():
             transport="sse",
             host="0.0.0.0",
             port=8080,
-            streamable_http_path="/sse-endpoint"
+            streamable_http_path="/sse-endpoint",
+            stateless_http=True,
+        )
+
+
+def test_server_start_with_https_streamable_http():
+    """Test that server.start() runs uvicorn directly with SSL when https cert and key are provided with streamable-http."""
+    credentials = Credentials(
+        odm_url="http://test:9060/res",
+        username="test",
+        password="test"
+    )
+    server = DecisionMCPServer(
+        console_credentials=credentials,
+        runtime_credentials=credentials,
+        transport="streamable-http",
+        host="127.0.0.1",
+        port=3001,
+        path="/custom-path",
+        https_cert_path="/path/to/cert.pem",
+        https_key_path="/path/to/key.pem",
+        https_key_password="secret"
+    )
+    
+    with patch('decision_mcp_server.DecisionMCPServer.MCPServer') as mock_fastmcp_class, \
+         patch('decision_mcp_server.DecisionMCPServer.DecisionServerManager'), \
+         patch('decision_mcp_server.DecisionMCPServer.uvicorn.run') as mock_uvicorn_run:
+        
+        mock_fastmcp = mock_fastmcp_class.return_value
+        mock_fastmcp._mcp_server = Mock()
+        mock_fastmcp.settings = Mock()
+        mock_fastmcp.settings.log_level = "INFO"
+        mock_app = Mock()
+        mock_fastmcp.streamable_http_app.return_value = mock_app
+        mock_fastmcp.run = Mock()
+        
+        server.start()
+        
+        mock_fastmcp.streamable_http_app.assert_called_once()
+        mock_fastmcp.run.assert_not_called()
+        mock_uvicorn_run.assert_called_once_with(
+            mock_app,
+            host="127.0.0.1",
+            port=3001,
+            log_level="info",
+            ssl_certfile="/path/to/cert.pem",
+            ssl_keyfile="/path/to/key.pem",
+            ssl_keyfile_password="secret"
+        )
+
+
+def test_server_start_with_https_sse():
+    """Test that server.start() runs uvicorn directly with SSL when https cert and key are provided with sse transport."""
+    credentials = Credentials(
+        odm_url="http://test:9060/res",
+        username="test",
+        password="test"
+    )
+    server = DecisionMCPServer(
+        console_credentials=credentials,
+        runtime_credentials=credentials,
+        transport="sse",
+        host="0.0.0.0",
+        port=8080,
+        path="/sse-endpoint",
+        https_cert_path="/path/to/cert.pem",
+        https_key_path="/path/to/key.pem",
+    )
+    
+    with patch('decision_mcp_server.DecisionMCPServer.MCPServer') as mock_fastmcp_class, \
+         patch('decision_mcp_server.DecisionMCPServer.DecisionServerManager'), \
+         patch('decision_mcp_server.DecisionMCPServer.uvicorn.run') as mock_uvicorn_run:
+        
+        mock_fastmcp = mock_fastmcp_class.return_value
+        mock_fastmcp._mcp_server = Mock()
+        mock_fastmcp.settings = Mock()
+        mock_fastmcp.settings.log_level = "DEBUG"
+        mock_app = Mock()
+        mock_fastmcp.sse_app.return_value = mock_app
+        mock_fastmcp.run = Mock()
+        
+        server.start()
+        
+        mock_fastmcp.sse_app.assert_called_once()
+        mock_fastmcp.run.assert_not_called()
+        mock_uvicorn_run.assert_called_once_with(
+            mock_app,
+            host="0.0.0.0",
+            port=8080,
+            log_level="debug",
+            ssl_certfile="/path/to/cert.pem",
+            ssl_keyfile="/path/to/key.pem",
+            ssl_keyfile_password=None
+        )
+
+
+def test_server_start_with_https_stdio_warning(caplog):
+    """Test that server.start() logs a warning and falls back to server.run when https options are used with stdio transport."""
+    credentials = Credentials(
+        odm_url="http://test:9060/res",
+        username="test",
+        password="test"
+    )
+    server = DecisionMCPServer(
+        console_credentials=credentials,
+        runtime_credentials=credentials,
+        transport="stdio",
+        https_cert_path="/path/to/cert.pem",
+        https_key_path="/path/to/key.pem",
+    )
+    
+    with patch('decision_mcp_server.DecisionMCPServer.MCPServer') as mock_fastmcp_class, \
+         patch('decision_mcp_server.DecisionMCPServer.DecisionServerManager'), \
+         patch('decision_mcp_server.DecisionMCPServer.uvicorn.run') as mock_uvicorn_run, \
+         caplog.at_level(logging.WARNING):
+        
+        mock_fastmcp = mock_fastmcp_class.return_value
+        mock_fastmcp._mcp_server = Mock()
+        mock_fastmcp.run = Mock()
+        
+        server.start()
+        
+        assert "HTTPS options are ignored with the stdio transport" in caplog.text
+        mock_uvicorn_run.assert_not_called()
+        mock_fastmcp.run.assert_called_once_with(
+            transport="stdio",
+            host="0.0.0.0",
+            port=3000,
+            streamable_http_path="/mcp",
+            stateless_http=True
         )
 
 
@@ -948,3 +1148,29 @@ def test_main_not_running_in_pod():
             
     finally:
         _uvicorn_config.Config.configure_logging = original_configure_logging
+
+
+def test_main_passes_https_arguments():
+    """Test that main() correctly passes HTTPS certificate and key arguments to DecisionMCPServer."""
+    from decision_mcp_server.DecisionMCPServer import main
+    test_args = [
+        "DecisionMCPServer",
+        "--https-cert-path", "/path/to/cert.pem",
+        "--https-key-path", "/path/to/key.pem",
+        "--https-key-password", "keypass"
+    ]
+    with patch('sys.argv', test_args), \
+         patch('decision_mcp_server.DecisionMCPServer.create_credentials') as mock_create_creds, \
+         patch('decision_mcp_server.DecisionMCPServer.DecisionMCPServer') as mock_server_class:
+        
+        mock_create_creds.return_value = (Mock(), Mock())
+        mock_server_instance = mock_server_class.return_value
+        mock_server_instance.start = Mock()
+        
+        main()
+        
+        mock_server_class.assert_called_once()
+        _, kwargs = mock_server_class.call_args
+        assert kwargs.get('https_cert_path') == "/path/to/cert.pem"
+        assert kwargs.get('https_key_path') == "/path/to/key.pem"
+        assert kwargs.get('https_key_password') == "keypass"
