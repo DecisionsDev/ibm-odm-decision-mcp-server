@@ -1,6 +1,6 @@
 FROM registry.access.redhat.com/ubi10-minimal AS builder
 ARG PYTHON_VERSION=3.14
-ARG TRUSTSTORE_PWD
+ARG KEYSTORE_PWD
 ENV UV_COMPILE_BYTECODE=1
 ENV UV_LINK_MODE=copy
 ENV UV_PYTHON_INSTALL_DIR=/python
@@ -15,23 +15,23 @@ ADD https://astral.sh/uv/install.sh /uv-installer.sh
 # - java-21-openjdk-headless  for keytool (truststore certificate extraction)
 RUN set -ex; \
     microdnf -y upgrade --disableplugin=subscription-manager --setopt=install_weak_deps=0; \
-    microdnf -y install tar gzip python3-cryptography java-21-openjdk-headless; \
+    microdnf -y install tar gzip python3-cryptography java-21-openjdk-headless openssl; \
     sh /uv-installer.sh; \
     uv python install ${PYTHON_VERSION}
 
-# Download the ODM truststore and extract each certificate as a PEM file,
-# then concatenate them all into a single tls.crt bundle
+# Download the keystore containing the key pair used to secure HTTPS by default
+# convert it to p12 to extract the private key and client certificate
 RUN set -ex; \
-    curl -fsSL https://github.com/DecisionsDev/odm-ondocker/raw/refs/heads/master/common/security/truststore.jks \
-        -o /tmp/truststore.jks; \
-    mkdir -p /mcp-certs/trusted-odm; \
-    for alias in $(keytool -list -keystore /tmp/truststore.jks -storepass "${TRUSTSTORE_PWD}" -noprompt \
-            | awk -F',' '/trustedCertEntry/{print $1}' | tr -d ' '); do \
-        keytool -exportcert -keystore /tmp/truststore.jks -storepass "${TRUSTSTORE_PWD}" \
-            -alias "${alias}" -rfc -noprompt \
-            -file "/mcp-certs/trusted-odm/${alias}.pem"; \
-    done; \
-    cat /mcp-certs/trusted-odm/*.pem > /mcp-certs/trusted-odm/tls.crt
+    curl -fsSL -o /tmp/keystore.jks https://github.com/DecisionsDev/odm-ondocker/raw/refs/heads/master/common/security/keystore.jks; \
+    mkdir -p /mcp-certs/tls; \
+    keytool -importkeystore \
+        -srckeystore  /tmp/keystore.jks  -srcstoretype JKS     -srcstorepass "${KEYSTORE_PWD}" \
+        -destkeystore /tmp/keystore.p12 -deststoretype PKCS12 -deststorepass "${KEYSTORE_PWD}"; \
+    openssl pkcs12 -in /tmp/keystore.p12 -passin pass:"${KEYSTORE_PWD}" -noenc \
+        -out /mcp-certs/tls/tls.key; \
+    openssl pkcs12 -in /tmp/keystore.p12 -passin pass:"${KEYSTORE_PWD}" -noenc -nokeys | openssl x509 \
+        -out /mcp-certs/tls/tls.crt; \
+    chmod a+r /mcp-certs/tls/tls.*
 
 WORKDIR /app
 RUN --mount=type=cache,target=/root/.cache/uv \
@@ -76,7 +76,7 @@ USER 501
 WORKDIR /app
 COPY --from=builder --chown=501:501 /python /python
 COPY --from=builder --chown=501:501 /app/ /app/
-COPY --from=builder --chown=501:501 /mcp-certs/trusted-odm/tls.crt /mcp-certs/trusted-odm/tls.crt
+COPY --from=builder --chown=501:501 /mcp-certs/tls /mcp-certs/tls
 COPY                --chown=501:501 /container/script /script
 COPY                --chown=501:501 /${LICENSES_DIR}  /licenses
 

@@ -292,7 +292,17 @@ class DecisionMCPServer:
 
     def run_https(self):
         # FastMCP.run() does not support TLS: serve its ASGI app with uvicorn directly
-        app = self.server.streamable_http_app() if self.transport == 'streamable-http' else self.server.sse_app()
+        if self.transport == 'streamable-http':
+            app = self.server.streamable_http_app(
+                host=self.host,
+                streamable_http_path=self.path,
+                stateless_http=True,
+            )
+        else:
+            app = self.server.sse_app(
+                host=self.host,
+                sse_path=self.path,
+            )
         self.logger.info(f"Serving MCP server over HTTPS on https://{self.host}:{self.port}{self.path}")
         uvicorn.run(app,
                     host=self.host,

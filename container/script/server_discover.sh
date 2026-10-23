@@ -1,10 +1,15 @@
 #!/usr/bin/env bash
-curl ${CURL_OPTS} \
+if [[ -d /mcp-certs/tls/tls-enabled ]]; then
+  SCHEME="https"
+else
+  SCHEME="http"
+fi
+curl --insecure ${CURL_OPTS} \
     -H "mcp-method: server/discover" \
     -H "mcp-protocol-version: 2026-07-28" \
     -H "Accept: application/json,text/event-stream" \
     -H "Content-Type: application/json" \
-    http://localhost:${PORT}${MOUNT_PATH} \
+    ${SCHEME}://localhost:${PORT}${MOUNT_PATH} \
     -d '{
   "jsonrpc": "2.0",
   "id": "server-discover-probe-1",
