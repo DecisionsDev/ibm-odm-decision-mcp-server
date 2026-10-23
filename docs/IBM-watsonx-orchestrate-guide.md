@@ -56,11 +56,18 @@ You need a running instance of both:
 
 - Enter a **Server name** <u>without any space character</u> eg. `ODM_MCP_Server`
 - Optionally enter a **Description** eg. `This MCP Server connects to an ODM Decision Server, enabling to execute the rulesets deployed.`
-- Enter an **Install command**
+- Enter an **Install command** that starts the Decision MCP Server
    > Note 1:
-   >  - This *Install command* starts the Decision MCP Server
-   >  - it begins with `uvx --from git+https://github.com/DecisionsDev/ibm-odm-decision-mcp-server.git ibm-odm-decision-mcp-server`
-   >    followed by :
+   >  - `uvx --from <Decision_MCP_server_Source_Code_archive_URL> ibm-odm-decision-mcp-server`
+   >  - where `<Decision_MCP_server_Source_Code_archive_URL>` should be replaced an URL such as:
+   >
+   >    | Type of archive | Example | URL |
+   >    |-----------------|---------|-----|
+   >    | Branch | `main` | `https://github.com/DecisionsDev/ibm-odm-decision-mcp-server/archive/refs/heads/main.zip` |
+   >    | Tag | `v1.1.0.0` | `https://github.com/DecisionsDev/ibm-odm-decision-mcp-server/archive/refs/tags/v1.1.0.0.zip` |
+   >    | Commit | `2cffad4` | `https://github.com/DecisionsDev/ibm-odm-decision-mcp-server/archive/2cffad4e161500e517eb733906c0c85dcca7097b.zip` |
+   >
+   >  - followed by :
    >    - `--url <RES_URL>` (where RES_URL is the URL of the ODM RES console where the rulesets to be used as tools are deployed)
    >    - authentication arguments to connect to the ODM RES console (either using basic auth, OpenId, or Zen Api Key)
    >  - For more about those arguments, please refer to [the main README.md (chapter 'ODM Container Environments & Authentication')](../README.md#1-odm-container-environments--authentication)
