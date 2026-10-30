@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-if [[ -d /mcp-certs/tls/tls-enabled ]]; then
+if [[ -d /mcp-certs/tls-enabled ]]; then
   SCHEME="https"
 else
   SCHEME="http"
