@@ -114,22 +114,23 @@ This step is optional and only needed if you choose to run ODM as a container on
   - **Username:** `odmAdmin`
   - **Password:** `odmAdmin`
 
-## Configure IBM Bob
+## Configuring MCP servers in IBM Bob
 
-1. To access the MCP settings panel, click the 3 dots next to the gear icon in the upper right corner of the chat window. Then, select MCP servers from the dropdown menu.
+You can manage MCP server configurations at two levels:
 
-    ![IBM Bob Screenshot](images/bob-ide-start.png)
+1. Global configuration: Settings in location below apply to all workspaces:
+    - macOS: `~/.bob/settings/mcp.json`
+    - Windows: `%APPDATA%\IBM Bob\User\globalStorage\ibm.bob-code\settings\mcp.json`
+1. Project-level configuration: Settings in `.bob/mcp.json` apply only to the current project
 
-1. Ensure that `Use MCP servers` is enabled and Click the `Open` button next to `Global MCPs` or `Project MCPs` to edit the MCP configuration:
-    - the configuration can be set at two levels: global (applied across all workspaces) or project-specific (stored in `.bob/mcp.json` within your project root, making it easy to share with teams through version control).
+When a server name exists in both global and project configurations, the project-level configuration takes precedence.
 
-    ![IBM Bob Screenshot](images/bob-mcp-servers.png)
+### Editing MCP settings files
 
-1. This opens the configuration file chosen. If you chose to edit the global settings:
-   - macOS: `~/.bob/settings/mcp_settings.json`
-   - Windows: `%APPDATA%\IBM Bob\User\globalStorage\ibm.bob-code\settings\mcp_settings.json`
+Use Bob IDE, or another text editor, to modify your MCP settings files.
 
-1. Edit the configuration file and add the following configuration:
+Add the following configuration:
+
    ```json
    {
      "mcpServers": {
@@ -148,9 +149,15 @@ This step is optional and only needed if you choose to run ODM as a container on
    }
    ```
 
-1. Save the file and then click the `Refresh all servers` icon. After some time, the `ibm-odm-decision-mcp-server` MCP server will get displayed.
+1. Save the file, and open IBM Bob settings.
+
+    ![IBM Bob Screenshot](images/bob-ide-start.png)
+    
+1. Select MCP, the `ibm-odm-decision-mcp-server` MCP server should be displayed.
 
     ![IBM Bob Screenshot](images/bob-refresh.png)
+
+1. Make sure that **Enable MCP tools for new tasks** is enabled, to let IBM Bob use tools.
 
 1. Click `ibm-odm-decision-mcp-server` and you will see the tools available:
 
