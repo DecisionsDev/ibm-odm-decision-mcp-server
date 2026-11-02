@@ -4,6 +4,9 @@ if [[ -d /mcp-certs/tls-enabled ]]; then
 else
   SCHEME="http"
 fi
+if [[ "${CURL_OPTS}" != "-s -o /dev/null -w %{http_code}" ]]; then
+    echo "Sending request to ${SCHEME}://localhost:${PORT}${MOUNT_PATH}"
+fi
 curl --insecure ${CURL_OPTS} \
     -H "mcp-method: server/discover" \
     -H "mcp-protocol-version: 2026-07-28" \
