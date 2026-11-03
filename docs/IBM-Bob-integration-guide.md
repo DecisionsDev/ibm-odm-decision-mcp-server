@@ -114,7 +114,7 @@ This step is optional and only needed if you choose to run ODM as a container on
   - **Username:** `odmAdmin`
   - **Password:** `odmAdmin`
 
-## Configuring MCP servers in IBM Bob
+## Configure IBM Bob
 
 You can manage MCP server configurations at two levels:
 
