@@ -530,7 +530,7 @@ class _SuppressAccessLogForProbes(logging.Filter):
     """Drop uvicorn access-log entries from health-check probes.
 
     Suppresses two categories:
-    - Any request to the root path ``/`` (health-check route, regardless of source).
+    - Any request to the root path "/" (platform health-check) or "/healthcheck" (probes), regardless of source.
     - Requests whose client address matches the local pod IP or 127.0.0.1.
 
     Uvicorn emits: logger.info('%s - "%s %s HTTP/%s" %d', client_addr, method, path, http_version, status_code)
@@ -548,8 +548,9 @@ class _SuppressAccessLogForProbes(logging.Filter):
         args = record.args
         if not (isinstance(args, tuple) and len(args) >= 3):
             return True
-        # Suppress health-check hits on the root path from any source.
-        if str(args[2]) == "/":
+        # Suppress health-check hits on the root path, or on the /healthcheck path from any source.
+        path = str(args[2]).split("?", 1)[0].rstrip("/")
+        if path == "" or path.endswith("/healthcheck"):
             return False
         client = str(args[0])
         return not any(client.startswith(p) for p in self._prefixes)
