@@ -13,8 +13,10 @@
 # limitations under the License.
 
 import json
-from typing import Optional
+from typing import Optional, Any
 from mcp.server.mcpserver.context import Context
+from starlette.requests import Request
+from starlette.responses import Response, JSONResponse
 from mcp_types import Tool, Resource, CallToolResult, TextContent
 from mcp.server import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError, ResourceError, ResourceNotFoundError
@@ -36,11 +38,36 @@ import sys
 import socket
 
 class DecisionMCPServer:
+    MASKED_VALUE = "*****"
+    # Startup arguments (argparse destination names) whose value must not be disclosed by the healthcheck endpoint
+    SENSITIVE_ARGUMENTS = frozenset({"username", "password", "zenapikey",
+                                     "client_id", "client_secret", "scope",
+                                     "pkjwt_key_password", "mtls_key_password", "https_key_password"})
+    # Environment variables read by the MCP server, with a flag telling whether their value is sensitive
+    ENVIRONMENT_VARIABLES = {
+        # sensitive
+        "ODM_USERNAME": True, "ODM_PASSWORD": True, "ZENAPIKEY": True,
+        "CLIENT_ID": True, "CLIENT_SECRET": True, "SCOPE": True,
+        "PKJWT_KEY_PASSWORD": True, "MTLS_KEY_PASSWORD": True, "HTTPS_KEY_PASSWORD": True,
+        # not-sensitive
+        "ODM_URL": False, "ODM_RUNTIME_URL": False, "TOKEN_URL": False,
+        "VERIFY_SSL": False, "VERIFY_SSL_HOSTNAME": False,
+        "SSL_CERT_PATH": False,
+        "PKJWT_CERT_PATH": False, "PKJWT_KEY_PATH": False,
+        "MTLS_CERT_PATH": False, "MTLS_KEY_PATH": False,
+        "HTTPS_CERT_PATH": False, "HTTPS_KEY_PATH": False,
+        "CONSOLE_AUTH_TYPE": False, "RUNTIME_AUTH_TYPE": False,
+        "TRANSPORT": False, "HOST": False, "PORT": False, "MOUNT_PATH": False,
+        "LOG_LEVEL": False, "TRACES_DIR": False, "TRACE_ENABLE": False, "TRACE_MAXSIZE": False,
+        "DEDICATED_RUNTIMES": False, "RUNNING_IN_POD": False,
+    }
+
     def __init__(self, console_credentials: Credentials, runtime_credentials: Credentials,
                  transport: Optional[str] = 'stdio', host: Optional[str] = '0.0.0.0', port: Optional[int] = 3000, path: Optional[str] = '/mcp',
                  traces_dir: Optional[str] = None, trace_enable: bool = False, trace_maxsize: int = 50,
                  dedicated_runtimes: Optional[list[tuple[str, str]]] = None,
                  https_cert_path: Optional[str] = None, https_key_path: Optional[str] = None, https_key_password: Optional[str] = None,
+                 startup_args: Optional[dict[str, Any]] = None,
                  ):
         # Get logger for this class
         self.logger = logging.getLogger(__name__)
@@ -104,6 +131,7 @@ class DecisionMCPServer:
         self.https_cert_path    = https_cert_path
         self.https_key_path     = https_key_path
         self.https_key_password = https_key_password
+        self.startup_args: dict[str, Any] = startup_args if startup_args is not None else {}
         if bool(self.https_cert_path) != bool(self.https_key_path):
             raise ValueError("HTTPS requires both a certificate (--https-cert-path) and a private key (--https-key-path)")
 
@@ -266,6 +294,35 @@ class DecisionMCPServer:
             
         return self.execution_traces.get(trace_id)
 
+    def get_config(self) -> dict[str, dict[str, Any]]:
+        """Builds the startup configuration of the MCP server, with the sensitive values masked.
+
+        Unset values (None) are omitted. Set sensitive values are replaced by `*****`.
+
+        Returns:
+            A dict with the keys `arguments` (startup arguments) and `environment`
+            (environment variables read by the MCP server).
+        """
+        arguments = {name: (self.MASKED_VALUE if name in self.SENSITIVE_ARGUMENTS else value)
+                     for name, value in self.startup_args.items() if value is not None}
+        environment = {name: (self.MASKED_VALUE if sensitive else os.environ[name])
+                       for name, sensitive in self.ENVIRONMENT_VARIABLES.items() if name in os.environ}
+        return {"arguments": arguments, "environment": environment}
+
+    def register_healthcheck(self) -> None:
+        """Registers the public endpoint `{path}/healthcheck` on the MCP server.
+
+        The endpoint answers HTTP 200 with an empty body. If the query parameter `config` is present,
+        the body is a JSON object with the startup arguments and the environment variables (see `get_config`).
+        No authentication is required. The route is registered by `start()` right before the MCP server
+        begins serving, so the endpoint does not exist (no 200) while the MCP server is not started.
+        """
+        @self.server.custom_route(f"{self.path.rstrip('/')}/healthcheck", methods=["GET", "HEAD", "OPTIONS"])
+        async def healthcheck(request: Request) -> Response:
+            if "config" in request.query_params:
+                return JSONResponse(self.get_config())
+            return Response(status_code=200)
+
     def start(self):
 
         self.manager = DecisionServerManager(console_credentials=self.console_credentials, 
@@ -283,6 +340,11 @@ class DecisionMCPServer:
 
         if self.https_cert_path and self.transport == 'stdio':
             self.logger.warning("HTTPS options are ignored with the stdio transport")
+
+        # Last step before serving (run() blocks): the healthcheck route only exists once the MCP server is ready to be started
+        if self.transport != "stdio":
+            self.register_healthcheck()
+
         if self.https_cert_path and self.transport != 'stdio':
             self.run_https()
         else:
@@ -375,7 +437,13 @@ def parse_arguments():
              "When call_tool is invoked, if the ruleset path starts with PATH the request is sent to URL instead of the default runtime."
     )
 
-    return parser.parse_args()
+    args = parser.parse_args()
+
+    # Re-parse with all defaults suppressed: only the options explicitly given on the command line remain
+    for action in parser._actions:
+        action.default = argparse.SUPPRESS
+    args.explicit = vars(parser.parse_args())
+    return args
 
 def create_credentials(args):
 
@@ -534,5 +602,6 @@ def main():
         https_cert_path    = args.https_cert_path,
         https_key_path     = args.https_key_path,
         https_key_password = args.https_key_password,
+        startup_args       = getattr(args, "explicit", vars(args)),
     )
     server.start()
