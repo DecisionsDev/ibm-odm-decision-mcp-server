@@ -4,7 +4,7 @@
 
 ### 1. Install IBM Bob
 - IBM Bob is in early access with limited availability. Click [Sign up](https://www.ibm.com/products/bob#Form) and fill in the form to request access to IBM Bob.
-- Then follow the [instructions](https://internal.bob.ibm.com/docs/ide/install#install-ibm-bob) to install IBM Bob.
+- Then follow the [instructions](https://bob.ibm.com/docs/ide/getting-started/install) to install IBM Bob.
 
 ### 2. Install Git, Python and uv
 
@@ -249,6 +249,6 @@ With the configuration above, the Decision MCP Server
 
 ## Additional information
 
-- IBM Bob documentation: [Bob docs](https://internal.bob.ibm.com/docs/ide).
+- IBM Bob documentation: [Bob docs](https://bob.ibm.com/docs/ide).
 - Tutorial: [MCP integration with IBM Bob](https://www.ibm.com/think/tutorials/mcp-integration-ibm-bob)
 - Interactive Demo: Click this [link](https://www.ibm.com/products/bob) and then click the "Interactive Demo" button
