@@ -343,11 +343,14 @@ class DecisionMCPServer:
 
         # Last step before serving (run() blocks): the healthcheck route only exists once the MCP server is ready to be started
         if self.transport != "stdio":
+            scheme = "https" if self.https_cert_path else "http"
+            self.logger.info(f"Serving healthcheck on {scheme}://{self.host}:{self.port}{self.path.rstrip('/')}/healthcheck")
             self.register_healthcheck()
 
         if self.https_cert_path and self.transport != 'stdio':
             self.run_https()
         else:
+            self.logger.info(f"Serving MCP server on http://{self.host}:{self.port}{self.path}")
             self.server.run(transport=self.transport,
                             host=self.host,
                             port=self.port,
