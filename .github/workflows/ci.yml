@@ -31,4 +31,4 @@ jobs:
     - name: Run tests
       run: |
         mkdir -p test-results
-        uv run pytest -v --durations=0 --cov=decision_mcp_server --cov-report=html --cov-report=term-missing tests/ --html=test-results/report.html --self-contained-html
+        uv run --verbose pytest -v --durations=0 --cov=decision_mcp_server --cov-report=html --cov-report=term-missing tests/ --html=test-results/report.html --self-contained-html
