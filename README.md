@@ -248,8 +248,18 @@ The parameters below can be specified:
 | `--traces-dir`    | `TRACES_DIR`        | Directory to store execution traces                                                                     | `~/.mcp-server/traces`                  |
 | `--trace-enable`  | `TRACE_ENABLE`      | Enable or disable trace storage (`True` or `False`)                                                     | `False`                                 |
 | `--trace-maxsize` | `TRACE_MAXSIZE`     | Maximum number of traces to store before removing oldest traces                                         | `50`                                    |
+| `--tools-refresh-period` | `TOOLS_REFRESH_PERIOD` | Period in seconds of the background refresh of the tools. The clients are notified (`tools/list_changed`) when the tools change. `0` disables the background refresh. | `300` |
+| `--tools-refresh-min-interval` | `TOOLS_REFRESH_MIN_INTERVAL` | Minimum interval in seconds between consecutive refreshes from ODM triggered by `tools/list` requests or calls to unknown tools. Serves cached tools if called within this interval. Set to `0` to refresh on every request, or `-1` to disable on-demand refreshes. | `20` |
 
-> Parameters to start the MCP server in remote mode (allowing connections from remote MCP clients) 
+#### Detailed Breakdown of `--tools-refresh-min-interval`
+
+| Value | Behavior |
+|---|---|
+| **`> 0`** *(default: `20`)* | Rate-limits ODM queries. When a client requests `tools/list` or calls an unknown tool, ODM is only queried if at least this many seconds have passed since the last refresh; otherwise, cached tools are returned immediately. |
+| **`0`** | No rate limiting. Always fetches the latest tools from ODM on every `tools/list` request and every unknown tool invocation. |
+| **`-1`** | Disables on-demand refreshes. `tools/list` and unknown tool calls will only use the in-memory cache, and tools will only refresh via the background periodic thread (`--tools-refresh-period`). |
+
+> Parameters to start the MCP server in remote mode (allowing connections from remote MCP clients)
 >| CLI Argument | Environment Variable | Description | Default |
 >|--------------|----------------------|-------------|---------|
 >| `--transport`| `TRANSPORT`          | `stdio`, `streamable-http` or `sse` : Means of communication of the Decision MCP server: local (`stdio`) or remote (`streamable-http` or `sse`)) | `stdio` |

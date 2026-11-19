@@ -42,4 +42,13 @@ class DecisionServiceDescription:
             input_schema=input_schema,
         )
 
+    def __eq__(self, other):
+        if not isinstance(other, DecisionServiceDescription):
+            return NotImplemented
+        return (
+                self.tool_description.name         == other.tool_description.name
+            and self.tool_description.description  == other.tool_description.description
+            and self.tool_description.input_schema == other.tool_description.input_schema
+        )
+
    

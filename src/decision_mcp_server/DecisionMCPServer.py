@@ -12,15 +12,25 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import asyncio
 import json
+import threading
+import time
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from typing import Optional, Any
 from mcp.server.mcpserver.context import Context
 from starlette.requests import Request
 from starlette.responses import Response, JSONResponse
 from mcp_types import Tool, Resource, CallToolResult, TextContent
+from mcp_types.version import MODERN_PROTOCOL_VERSIONS
 from mcp.server import MCPServer
+from mcp.server.context import CallNext, HandlerResult, ServerRequestContext
+from mcp.server.session import ServerSession
 from mcp.server.mcpserver.exceptions import ToolError, ResourceError, ResourceNotFoundError
+from mcp.server.lowlevel.server import NotificationOptions
 from mcp.server.lowlevel.helper_types import ReadResourceContents
+from mcp.shared.subscriptions import ToolsListChanged
 from pydantic import AnyUrl
 import logging
 import urllib3
@@ -39,6 +49,8 @@ import socket
 
 class DecisionMCPServer:
     MASKED_VALUE = "*****"
+    # Seconds to wait before the first refresh of the tools when running in a pod
+    POD_INITIAL_REFRESH_DELAY = 300
     # Startup arguments (argparse destination names) whose value must not be disclosed by the healthcheck endpoint
     SENSITIVE_ARGUMENTS = frozenset({"username", "password", "zenapikey",
                                      "client_id", "client_secret", "scope",
@@ -60,21 +72,33 @@ class DecisionMCPServer:
         "TRANSPORT": False, "HOST": False, "PORT": False, "MOUNT_PATH": False,
         "LOG_LEVEL": False, "TRACES_DIR": False, "TRACE_ENABLE": False, "TRACE_MAXSIZE": False,
         "DEDICATED_RUNTIMES": False, "RUNNING_IN_POD": False,
+        "TOOLS_REFRESH_PERIOD": False, "TOOLS_REFRESH_MIN_INTERVAL": False,
     }
 
     def __init__(self, console_credentials: Credentials, runtime_credentials: Credentials,
-                 transport: Optional[str] = 'stdio', host: Optional[str] = '0.0.0.0', port: Optional[int] = 3000, path: Optional[str] = '/mcp',
+                 transport: Optional[str] = 'stdio', host: Optional[str] = '0.0.0.0', port: int = 3000, path: Optional[str] = '/mcp',
                  traces_dir: Optional[str] = None, trace_enable: bool = False, trace_maxsize: int = 50,
                  dedicated_runtimes: Optional[list[tuple[str, str]]] = None,
                  https_cert_path: Optional[str] = None, https_key_path: Optional[str] = None, https_key_password: Optional[str] = None,
                  startup_args: Optional[dict[str, Any]] = None,
+                 tools_refresh_period: int = 300,
+                 tools_refresh_min_interval: int = 20,
                  ):
         # Get logger for this class
         self.logger = logging.getLogger(__name__)
         
         self.notes: dict[str, str] = {}
         self.repository: dict[str, DecisionServiceDescription] = {}
-        
+        self.server: Optional[MCPServer] = None
+
+        # Background refresh of the tools: period in seconds (0 or less disables it)
+        self.tools_refresh_period = tools_refresh_period
+        self.tools_refresh_min_interval = tools_refresh_min_interval
+        self._last_tools_refresh: Optional[float] = None
+        self._legacy_session: Optional[ServerSession] = None  # session of the legacy client (stdio only), to notify it that the tools changed
+        self._refresh_stop = threading.Event()
+        self._loop: Optional[asyncio.AbstractEventLoop] = None  # event loop serving the requests, captured by the lifespan of the MCP server
+
         # Store trace configuration
         self.trace_enable = trace_enable
         self.trace_maxsize = trace_maxsize
@@ -156,31 +180,146 @@ class DecisionMCPServer:
             raise ResourceNotFoundError(f"DecisionService not found: {name}")
         return [ReadResourceContents(content=str(self.repository[name].__dict__), mime_type="text/plain")]
 
-    async def list_tools(self) -> list[Tool]:
-        self.logger.info("Listing ODM tools")
+    def _fetch_tools(self) -> tuple[list[Tool], dict[str, DecisionServiceDescription]]:
+        """Fetches the tools from the ODM Decision Server.
+
+        Returns:
+            A tuple with the list of tools and the repository (tool name -> decision service description).
+        """
         # Ensure manager is initialized before using it
         if self.manager is None:
-            self.manager = DecisionServerManager(console_credentials=self.console_credentials, 
+            self.manager = DecisionServerManager(console_credentials=self.console_credentials,
                                                  runtime_credentials=self.runtime_credentials)
-            
+
         rulesets = self.manager.fetch_rulesets()
-        extractedTools = self.manager.generate_tools_format(rulesets)
-        tools = []
-        for decisionService in extractedTools:   
-            tool_info = decisionService.tool_description
-            tools.append(tool_info)
-            self.repository[decisionService.tool_name] = decisionService
+        repository = self.manager.generate_tools_format(rulesets)
+        tools = [decisionService.tool_description for decisionService in repository.values()]
+        return tools, repository
+
+    async def list_tools(self) -> list[Tool]:
+        self.logger.info("Listing ODM tools")
+        if self.refresh_tools_allowed():
+            return self.refresh_tools()
+        return [decisionService.tool_description for decisionService in self.repository.values()]
+
+    def refresh_tools(self) -> list[Tool]:
+        """Fetches the tools from ODM and notifies clients if the toolset has changed.
+
+        Returns:
+            list[Tool]: The updated list of tools.
+        """
+        tools, repository = self._fetch_tools()
+        if repository != self.repository:
+            self.repository = repository
+            if self._last_tools_refresh is not None:
+                self._notify_tools_changed()
+        self._last_tools_refresh = time.monotonic()
         return tools
 
+    def refresh_tools_allowed(self) -> bool:
+        """Tells whether refreshing the tools is allowed according to `tools_refresh_min_interval`.
+
+        Returns:
+            bool: True if refreshing the tools is allowed, False otherwise.
+        """
+        if self.tools_refresh_min_interval < 0:
+            return False
+        if self._last_tools_refresh is None or self.tools_refresh_min_interval == 0:
+            return True
+        return (time.monotonic() - self._last_tools_refresh) >= self.tools_refresh_min_interval
+
+    def _notify_tools_changed(self) -> None:
+        """Notifies the MCP clients that the tools changed.
+
+        The modern clients are notified through a `tools/list_changed` event published on the subscription bus of
+        the MCP server. The legacy client (stdio only, see `_capture_legacy_session`) is notified through its session.
+        Both must be used from the event loop serving the requests, which is captured by `_lifespan`
+        when the MCP server starts serving. Before that, no client can be listening, so nothing is published.
+        """
+        if self._loop is None or self.server is None:
+            return
+        try:
+            if self.transport == "stdio" and self._legacy_session is not None:
+                # the MCP server runs locally and the client is legacy
+                self.logger.info("The tools changed. Notifying the MCP client.")
+                asyncio.run_coroutine_threadsafe(self._send_legacy_tools_changed(self._legacy_session), self._loop)
+            else:
+                # notify Modern clients
+                self.logger.info("The tools changed. Notifying the modern MCP clients.")
+                asyncio.run_coroutine_threadsafe(self.server._subscriptions.publish(ToolsListChanged()), self._loop)
+        except (RuntimeError, AttributeError) as e:
+            self.logger.warning("The clients could not be notified that the tools changed: %s", e)
+        except Exception:
+            self.logger.exception("Unexpected error while notifying the clients that the tools changed")
+
+    async def _send_legacy_tools_changed(self, session: ServerSession) -> None:
+        """Sends a `notifications/tools/list_changed` to the legacy client on the standalone channel of its connection.
+
+        Args:
+            session: The session of the legacy client, captured by `_capture_legacy_session`.
+        """
+        try:
+            await session.send_tool_list_changed()
+        except Exception as e:
+            self.logger.warning("The legacy client could not be notified that the tools changed: %s", e)
+            if self._legacy_session is session:
+                self._legacy_session = None
+
+    async def _capture_legacy_session(self, ctx: ServerRequestContext, call_next: CallNext) -> HandlerResult:
+        """Middleware keeping the session of the legacy client, so that it can be notified outside of a request.
+
+        Only registered with the stdio transport, where a single client talks to the process over a single connection
+        for the whole life of the process. The standalone channel of that connection, which the session sends
+        notifications on, is then valid outside of a request. With the HTTP transports, the connection is
+        created for each request (stateless), so there is no channel to reach the client between requests.
+        The modern clients are not concerned: they are notified through the subscription bus.
+
+        Args:
+            ctx: The context of the message.
+            call_next: Invokes the rest of the chain.
+
+        Returns:
+            The result of the message.
+        """
+        if ctx.protocol_version not in MODERN_PROTOCOL_VERSIONS:
+            self._legacy_session = ctx.session
+        return await call_next(ctx)
+
+    def is_running_in_pod(self) -> bool:
+        """ Tells whether the MCP server runs in a pod. """
+        return os.getenv("RUNNING_IN_POD", "False") == "True" and self.transport == "streamable-http"
+
+    def _tools_refresh_loop(self) -> None:
+        """ Refreshes the tools periodically until stopped. """
+        delay = float(self.POD_INITIAL_REFRESH_DELAY if self.is_running_in_pod() else self.tools_refresh_period)
+        while not self._refresh_stop.wait(delay):
+            delay = float(self.tools_refresh_period)
+            try:
+                self.refresh_tools()
+            except Exception as e:
+                self.logger.warning("Failed to refresh the tools: %s", e)
+
+    def start_tools_refresh(self) -> None:
+        """Starts the daemon thread refreshing the tools periodically, unless `tools_refresh_period` is 0 or less."""
+        if self.tools_refresh_period <= 0:
+            self.logger.info("Periodic refresh of the tools is disabled")
+            return
+        self.logger.info("Refreshing the tools every %d seconds", self.tools_refresh_period)
+        threading.Thread(target=self._tools_refresh_loop, name="tools-refresh", daemon=True).start()
+
     async def call_tool(self, name: str, arguments: dict | None, context: Context) -> CallToolResult:
-        if not self.repository:
-            await self.list_tools()
+        if not self.repository or (self.repository.get(name) is None and self.refresh_tools_allowed()):
+            self.refresh_tools()
 
         if self.repository.get(name) is None:
             self.logger.error("Tool not found: %s", name)
             raise ToolError(f"Unknown tool: {name}")
 
-        self.logger.info("Invoking decision service for tool: %s with arguments: %s", name, arguments)
+        if self.logger.isEnabledFor(logging.DEBUG):
+            self.logger.debug("Calling tool %s with arguments: %s", name, arguments)
+        else:
+            self.logger.info("Calling tool %s", name)
+
         # Ensure manager is initialized before using it
         if self.manager is None:
             self.manager = DecisionServerManager(console_credentials=self.console_credentials,
@@ -192,7 +331,7 @@ class DecisionMCPServer:
         for path_prefix, creds in self.dedicated_runtime_credentials.items():
             if ruleset_path.startswith(path_prefix):
                 dedicated_credentials = creds
-                self.logger.info("Using dedicated runtime for path %s: %s", ruleset_path, creds.odm_url)
+                self.logger.debug("Using dedicated runtime for path %s: %s", ruleset_path, creds.odm_url)
                 break
 
         try:
@@ -323,14 +462,44 @@ class DecisionMCPServer:
                 return JSONResponse(self.get_config())
             return Response(status_code=200)
 
+    @asynccontextmanager
+    async def _lifespan(self, app: MCPServer) -> AsyncIterator[dict[str, Any]]:
+        """Lifespan of the MCP server: captures the event loop serving the requests.
+
+        The refresh thread needs this loop to publish `tools/list_changed` notifications (see
+        `_notify_tools_changed`). The SDK enters the lifespan on that loop: once at startup with the
+        streamable-http transport, and for each connection with the stdio and sse transports.
+
+        Args:
+            app: The MCP server being started.
+
+        Yields:
+            An empty lifespan context.
+        """
+        self._loop = asyncio.get_running_loop()
+        yield {}
+
     def start(self):
 
-        self.manager = DecisionServerManager(console_credentials=self.console_credentials, 
+        self.manager = DecisionServerManager(console_credentials=self.console_credentials,
                                              runtime_credentials=self.runtime_credentials)
 
         self.server = MCPServer(name="ibm-odm-decision-mcp-server",
                               instructions=INSTRUCTIONS,
+                              lifespan=self._lifespan,
                              )
+
+        # Legacy (handshake) clients only learn that tools can change from the capabilities returned by 'initialize'.
+        # MCPServer builds them with no NotificationOptions, so tools.listChanged would be false: default it to true (see notify_client).
+        lowlevel_server = self.server._lowlevel_server
+        create_initialization_options = lowlevel_server.create_initialization_options
+        def create_initialization_options_with_tools_changed(notification_options: NotificationOptions | None = None, *args, **kwargs):
+            return create_initialization_options(notification_options or NotificationOptions(tools_changed=True), *args, **kwargs)
+        lowlevel_server.create_initialization_options = create_initialization_options_with_tools_changed
+
+        # Legacy clients can only be notified outside of a request with stdio, where the connection outlives the requests
+        if self.transport == "stdio":
+            self.server.middleware.append(self._capture_legacy_session)
 
         # Register handlers
         self.server.read_resource  = self.read_resource
@@ -340,6 +509,8 @@ class DecisionMCPServer:
 
         if self.https_cert_path and self.transport == 'stdio':
             self.logger.warning("HTTPS options are ignored with the stdio transport")
+
+        self.start_tools_refresh()
 
         # Last step before serving (run() blocks): the healthcheck route only exists once the MCP server is ready to be started
         if self.transport != "stdio":
@@ -387,6 +558,22 @@ def _dedicated_runtime_pair(value: str) -> tuple[str, str]:
     path, _, url = value.partition('=')
     return (path.strip(), url.strip())
 
+def _int_from_env(parser: argparse.ArgumentParser, name: str, default: int) -> int:
+    """Read an integer from an environment variable.
+
+    Args:
+        parser: The argument parser, used to report an invalid value as a usage error.
+        name: The name of the environment variable.
+        default: The value returned when the environment variable is not set.
+
+    Returns:
+        The integer value of the environment variable, or `default` if it is not set.
+    """
+    try:
+        return int(os.getenv(name, str(default)))
+    except ValueError:
+        parser.error(f"environment variable {name} must be an integer, got {os.getenv(name)!r}")
+
 def parse_arguments():
     parser = argparse.ArgumentParser(description="Decision MCP Server")
     parser.add_argument("--url",                                        type=str, default=os.getenv("ODM_URL", "http://localhost:9060/res"), help="ODM service URL")
@@ -413,7 +600,7 @@ def parse_arguments():
     # arguments useful when running the MCP server in remote mode
     parser.add_argument("--transport",                                  type=str, default=os.getenv("TRANSPORT", "stdio"), choices=["stdio", "streamable-http", "sse"], help="Means of communication of the Decision MCP server: local (stdio) or remote.")
     parser.add_argument("--host",                                       type=str, default=os.getenv("HOST", "0.0.0.0"), help="IP or hostname that the MCP server listens to in remote mode.")
-    parser.add_argument("--port",                                       type=int, default=os.getenv("PORT", 3000), help="Port that the MCP server listens to in remote mode.")
+    parser.add_argument("--port",                                       type=int, default=_int_from_env(parser, "PORT", 3000), help="Port that the MCP server listens to in remote mode.")
     parser.add_argument("--mount-path",                                 type=str, default=os.getenv("MOUNT_PATH", "/mcp"), help="Path that the MCP server listens to in remote mode.")
     parser.add_argument("--https-cert-path",   "--https_cert_path",     type=str, default=os.getenv("HTTPS_CERT_PATH"), help="Path to the certificate (PEM) of the MCP server to serve HTTPS in remote mode. If not provided, the MCP server serves plain HTTP.")
     parser.add_argument("--https-key-path",    "--https_key_path",      type=str, default=os.getenv("HTTPS_KEY_PATH"),  help="Path to the private key (PEM) of the MCP server certificate (mandatory for HTTPS).")
@@ -427,7 +614,11 @@ def parse_arguments():
     # Trace-related arguments
     parser.add_argument("--traces-dir",    "--traces_dir",    type=str, default=os.getenv("TRACES_DIR"), help="Directory to store execution traces (optional). If not provided, traces will be stored in the 'traces' directory in the project root.")
     parser.add_argument("--trace-enable",  "--trace_enable",  type=str, default=os.getenv("TRACE_ENABLE", "False"), choices=["True", "False"], help="Enable trace storage. Default is False (trace storage disabled).")
-    parser.add_argument("--trace-maxsize", "--trace_maxsize", type=int, default=int(os.getenv("TRACE_MAXSIZE", "50")), help="Maximum number of traces to store (default: 50)")
+    parser.add_argument("--trace-maxsize", "--trace_maxsize", type=int, default=_int_from_env(parser, "TRACE_MAXSIZE", 50), help="Maximum number of traces to store (default: 50)")
+
+    # Tools refresh argument
+    parser.add_argument("--tools-refresh-period", "--tools_refresh_period", type=int, default=_int_from_env(parser, "TOOLS_REFRESH_PERIOD", 300), help="Period in seconds of the background refresh of the tools (default: 300). 0 disables the refresh.")
+    parser.add_argument("--tools-refresh-min-interval", "--tools_refresh_min_interval", type=int, default=_int_from_env(parser, "TOOLS_REFRESH_MIN_INTERVAL", 20), help="Minimum interval in seconds between consecutive refreshes of the tools triggered by list_tools or call_tool of an unknown tool. Set to 0 to refresh on every request, or -1 to disable on-demand refreshes (default: 20).")
 
     parser.add_argument(
         "--dedicated-runtimes", "--dedicated_runtimes",
@@ -578,19 +769,6 @@ def main():
         )
     logging.info(f"Running Python {sys.version_info}. Logging level set to: {logging.getLevelName(logging_level)}")
 
-    # suppress access logs originating from probes when running in a k8s pod
-    running_in_pod = os.getenv("RUNNING_IN_POD", "False") == "True"
-    if running_in_pod and args.transport == "streamable-http":
-        import uvicorn.config as _uvicorn_config
-        probe_filter = _SuppressAccessLogForProbes(local_ip=socket.gethostbyname(socket.gethostname()))
-        _original_configure_logging = _uvicorn_config.Config.configure_logging
-
-        def _configure_logging_with_filter(self) -> None:  # type: ignore[override]
-            _original_configure_logging(self)
-            logging.getLogger("uvicorn.access").addFilter(probe_filter)
-
-        _uvicorn_config.Config.configure_logging = _configure_logging_with_filter
-
     console_credentials, runtime_credentials = create_credentials(args)
     # Convert trace_enable from string to boolean
     trace_enable = args.trace_enable != "False"
@@ -602,10 +780,28 @@ def main():
         traces_dir=args.traces_dir,
         trace_enable=trace_enable,
         trace_maxsize=args.trace_maxsize,
+        tools_refresh_period=args.tools_refresh_period,
+        tools_refresh_min_interval=args.tools_refresh_min_interval,
         dedicated_runtimes=args.dedicated_runtimes or None,
         https_cert_path    = args.https_cert_path,
         https_key_path     = args.https_key_path,
         https_key_password = args.https_key_password,
         startup_args       = getattr(args, "explicit", vars(args)),
     )
+
+    # suppress access logs originating from probes when running in a k8s pod
+    if server.is_running_in_pod():
+        import uvicorn.config as _uvicorn_config
+        probe_filter = _SuppressAccessLogForProbes(local_ip=socket.gethostbyname(socket.gethostname()))
+        _original_configure_logging = _uvicorn_config.Config.configure_logging
+
+        def _configure_logging_with_filter(self) -> None:  # type: ignore[override]
+            _original_configure_logging(self)
+            logging.getLogger("uvicorn.access").addFilter(probe_filter)
+
+        _uvicorn_config.Config.configure_logging = _configure_logging_with_filter
+
+    if args.verifyssl == "False":
+        server.logger.warning("Verify SSL: False")
+
     server.start()
