@@ -248,25 +248,47 @@ The parameters below can be specified:
 | `--traces-dir`    | `TRACES_DIR`        | Directory to store execution traces                                                                     | `~/.mcp-server/traces`                  |
 | `--trace-enable`  | `TRACE_ENABLE`      | Enable or disable trace storage (`True` or `False`)                                                     | `False`                                 |
 | `--trace-maxsize` | `TRACE_MAXSIZE`     | Maximum number of traces to store before removing oldest traces                                         | `50`                                    |
-| `--tools-refresh-period` | `TOOLS_REFRESH_PERIOD` | Period in seconds of the background refresh of the tools. The clients are notified (`tools/list_changed`) when the tools change. `0` disables the background refresh. | `300` |
+
+#### Parameters to start the MCP server in remote mode (allowing connections from remote MCP clients)
+
+| CLI Argument | Environment Variable | Description | Default |
+|--------------|----------------------|-------------|---------|
+| `--transport`| `TRANSPORT`          | `stdio`, `streamable-http` or `sse` : Means of communication of the Decision MCP server: local (`stdio`) or remote (`streamable-http` or `sse`)) | `stdio` |
+| `--host`     | `HOST`               | IP or hostname that the MCP server listens to in remote mode. | `0.0.0.0` |
+| `--port`     | `PORT`               | Port that the MCP server listens to in remote mode. | `3000` |
+| `--mount-path`| `MOUNT_PATH`        | Path that the MCP server listens to in remote mode. | `/mcp` |
+
+#### Parameters to automatically update the list of tools
+
+| CLI Argument      | Environment Variable | Description                                                                                            | Default                                 |
+|-------------------|---------------------|---------------------------------------------------------------------------------------------------------|-----------------------------------------|
+| `--tools-refresh-period` | `TOOLS_REFRESH_PERIOD` | Period in seconds of the background refresh of the tools. The clients are notified when the tools change (see [Notification of tool changes](#notification-of-tool-changes)). `0` disables the background refresh. | `300` |
 | `--tools-refresh-min-interval` | `TOOLS_REFRESH_MIN_INTERVAL` | Minimum interval in seconds between consecutive refreshes from ODM triggered by `tools/list` requests or calls to unknown tools. Serves cached tools if called within this interval. Set to `0` to refresh on every request, or `-1` to disable on-demand refreshes. | `20` |
 
-#### Detailed Breakdown of `--tools-refresh-min-interval`
+> Detailed Breakdown of `--tools-refresh-min-interval`
+> | Value | Behavior |
+> |---|---|
+> | **`> 0`** *(default: `20`)* | Rate-limits ODM queries. When a client requests `tools/list` or calls an unknown tool, ODM is only queried if at least this many seconds have passed since the last refresh; otherwise, cached tools are returned immediately. |
+> | **`0`** | No rate limiting. Always fetches the latest tools from ODM on every `tools/list` request and every unknown tool invocation. |
+> | **`-1`** | Disables on-demand refreshes. `tools/list` and unknown tool calls will only use the in-memory cache, and tools will only refresh via the background periodic thread (`--tools-refresh-period`). |
 
-| Value | Behavior |
-|---|---|
-| **`> 0`** *(default: `20`)* | Rate-limits ODM queries. When a client requests `tools/list` or calls an unknown tool, ODM is only queried if at least this many seconds have passed since the last refresh; otherwise, cached tools are returned immediately. |
-| **`0`** | No rate limiting. Always fetches the latest tools from ODM on every `tools/list` request and every unknown tool invocation. |
-| **`-1`** | Disables on-demand refreshes. `tools/list` and unknown tool calls will only use the in-memory cache, and tools will only refresh via the background periodic thread (`--tools-refresh-period`). |
+#### Notification of tool changes
 
-> Parameters to start the MCP server in remote mode (allowing connections from remote MCP clients)
->| CLI Argument | Environment Variable | Description | Default |
->|--------------|----------------------|-------------|---------|
->| `--transport`| `TRANSPORT`          | `stdio`, `streamable-http` or `sse` : Means of communication of the Decision MCP server: local (`stdio`) or remote (`streamable-http` or `sse`)) | `stdio` |
->| `--host`     | `HOST`               | IP or hostname that the MCP server listens to in remote mode. | `0.0.0.0` |
->| `--port`     | `PORT`               | Port that the MCP server listens to in remote mode. | `3000` |
->| `--mount-path`| `MOUNT_PATH`        | Path that the MCP server listens to in remote mode. | `/mcp` |
+The MCP server refreshes the list of tools in three situations:
 
+1. periodically, in a background thread, every `--tools-refresh-period` seconds (disabled with `0`). The first refresh happens one period after startup, or after 300 seconds when `RUNNING_IN_POD=True` with the `streamable-http` transport;
+1. when a client sends a `tools/list` request, if allowed by `--tools-refresh-min-interval`;
+1. when a client calls an unknown tool, if allowed by `--tools-refresh-min-interval`.
+
+Whatever the trigger, the clients are notified only if the fetched tools differ from the previously known ones. No notification is sent for the initial fetch, nor when the refresh from ODM fails (the previous tools are kept and a warning is logged).
+
+How the notification reaches the clients depends on the client and the transport:
+
+| Client | Transport | Behavior |
+|---|---|---|
+| Modern clients (recent MCP protocol versions) | all | A `tools/list_changed` event is published on the subscription mechanism of the MCP server, which delivers it to the subscribed clients. |
+| Legacy clients (initialize handshake) | `stdio` | A `notifications/tools/list_changed` is sent on the connection kept open with the single client for the whole life of the process. The server advertises the `tools.listChanged` capability during initialization. |
+| Legacy clients (initialize handshake) | `streamable-http`, `sse` | **Not notified.** The MCP server runs in stateless mode: there is no channel to reach the client between requests. The client gets the up-to-date tools the next time it requests `tools/list`, subject to `--tools-refresh-min-interval`. |
 
 ### Decision MCP Server Configuration File          
 
