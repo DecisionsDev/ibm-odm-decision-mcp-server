@@ -489,16 +489,16 @@ class DecisionMCPServer:
                               lifespan=self._lifespan,
                              )
 
-        # Legacy (handshake) clients only learn that tools can change from the capabilities returned by 'initialize'.
-        # MCPServer builds them with no NotificationOptions, so tools.listChanged would be false: default it to true (see notify_client).
-        lowlevel_server = self.server._lowlevel_server
-        create_initialization_options = lowlevel_server.create_initialization_options
-        def create_initialization_options_with_tools_changed(notification_options: NotificationOptions | None = None, *args, **kwargs):
-            return create_initialization_options(notification_options or NotificationOptions(tools_changed=True), *args, **kwargs)
-        lowlevel_server.create_initialization_options = create_initialization_options_with_tools_changed
-
         # Legacy clients can only be notified outside of a request with stdio, where the connection outlives the requests
         if self.transport == "stdio":
+            # Legacy (handshake) clients only learn that tools can change from the capabilities returned by 'initialize'.
+            # MCPServer builds them with no NotificationOptions, so tools.listChanged would be false: default it to true (see notify_client).
+            lowlevel_server = self.server._lowlevel_server
+            create_initialization_options = lowlevel_server.create_initialization_options
+            def create_initialization_options_with_tools_changed(notification_options: NotificationOptions | None = None, *args, **kwargs):
+                return create_initialization_options(notification_options or NotificationOptions(tools_changed=True), *args, **kwargs)
+            lowlevel_server.create_initialization_options = create_initialization_options_with_tools_changed
+
             self.server.middleware.append(self._capture_legacy_session)
 
         # Register handlers
