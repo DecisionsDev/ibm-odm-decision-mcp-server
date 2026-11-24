@@ -12,8 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import asyncio
+
 import pytest
-from unittest.mock import Mock, patch
+from unittest.mock import AsyncMock, Mock, patch
 import os
 import argparse
 import logging
@@ -444,8 +446,8 @@ def mock_manager():
         {"id": "rule2", "description": "Second ruleset"}
     ]
     # Setup mock tools
-    manager.generate_tools_format.return_value = [
-        Mock(
+    manager.generate_tools_format.return_value = {
+        "tool1": Mock(
             tool_name="tool1",
             tool_description=DummyTool(
                 name="tool1",
@@ -453,7 +455,7 @@ def mock_manager():
                 input_schema={"type": "object"}
             )
         ),
-        Mock(
+        "tool2": Mock(
             tool_name="tool2",
             tool_description=DummyTool(
                 name="tool2",
@@ -461,7 +463,7 @@ def mock_manager():
                 input_schema={"type": "object"}
             )
         )
-    ]
+    }
     return manager
 
 @pytest.fixture
@@ -498,7 +500,7 @@ async def test_list_tools(server, mock_manager):
 async def test_list_tools_empty(server, mock_manager):
     # Setup empty response
     mock_manager.fetch_rulesets.return_value = []
-    mock_manager.generate_tools_format.return_value = []
+    mock_manager.generate_tools_format.return_value = {}
 
     # Execute
     tools = await server.list_tools()
@@ -516,6 +518,301 @@ async def test_list_tools_error_handling(server, mock_manager):
     with pytest.raises(Exception) as exc_info:
         await server.list_tools()
     assert str(exc_info.value) == "Failed to fetch rulesets"
+
+@pytest.mark.asyncio
+async def test_list_tools_refreshes_the_tools_when_refresh_allowed(server, mock_manager):
+    server.tools_refresh_min_interval = 0
+    await server.list_tools()
+    mock_manager.fetch_rulesets.reset_mock()
+
+    tools = await server.list_tools()
+
+    assert [tool.name for tool in tools] == ["tool1", "tool2"]
+    mock_manager.fetch_rulesets.assert_called_once()
+
+@pytest.mark.asyncio
+async def test_list_tools_returns_cached_tools_when_refresh_not_allowed(server, mock_manager):
+    await server.list_tools()
+    mock_manager.fetch_rulesets.reset_mock()
+
+    tools = await server.list_tools()
+
+    assert [tool.name for tool in tools] == ["tool1", "tool2"]
+    mock_manager.fetch_rulesets.assert_not_called()
+
+@pytest.mark.asyncio
+async def test_list_tools_drops_the_removed_tools_and_notifies(server, mock_manager):
+    server.tools_refresh_min_interval = 0
+    await server.list_tools()
+    mock_manager.generate_tools_format.return_value = {
+        "tool1": mock_manager.generate_tools_format.return_value["tool1"]
+    }
+
+    with patch.object(server, "_notify_tools_changed") as notify:
+        tools = await server.list_tools()
+
+    assert [tool.name for tool in tools] == ["tool1"]
+    assert set(server.repository) == {"tool1"}
+    notify.assert_called_once()
+
+def test_refresh_tools_returns_the_tools(server):
+    assert [tool.name for tool in server.refresh_tools()] == ["tool1", "tool2"]
+
+def test_refresh_tools_updates_repository_without_notification_when_unchanged(server):
+    server.refresh_tools()
+    with patch.object(server, "_notify_tools_changed") as notify:
+        server.refresh_tools()  # same tools
+    assert set(server.repository) == {"tool1", "tool2"}
+    notify.assert_not_called()
+
+def test_refresh_tools_notifies_when_tools_changed(server, mock_manager):
+    server.refresh_tools()
+    mock_manager.generate_tools_format.return_value = {
+        "tool1": mock_manager.generate_tools_format.return_value["tool1"]
+    }
+
+    with patch.object(server, "_notify_tools_changed") as notify:
+        server.refresh_tools()
+
+    assert set(server.repository) == {"tool1"}
+    notify.assert_called_once()
+
+def test_refresh_tools_failure_keeps_previous_tools(server, mock_manager):
+    server.refresh_tools()
+    mock_manager.fetch_rulesets.side_effect = Exception("ODM unreachable")
+
+    with pytest.raises(Exception, match="ODM unreachable"):
+        server.refresh_tools()
+
+    assert set(server.repository) == {"tool1", "tool2"}
+
+def test_notify_tools_changed_publishes_on_the_request_loop(server):
+    loop = Mock()
+    server._loop = loop
+    server.server = Mock()
+    with patch("decision_mcp_server.DecisionMCPServer.asyncio.run_coroutine_threadsafe") as run_threadsafe:
+        server._notify_tools_changed()
+    run_threadsafe.assert_called_once()
+    assert run_threadsafe.call_args.args[1] is loop
+
+@pytest.mark.asyncio
+async def test_lifespan_captures_the_serving_loop(server):
+    assert server._loop is None
+    async with server._lifespan(Mock(spec=MCPServer)) as context:
+        assert server._loop is asyncio.get_running_loop()
+        assert context == {}
+
+def test_notify_tools_changed_does_nothing_before_the_server_is_serving(server):
+    server._loop = None
+    with patch("decision_mcp_server.DecisionMCPServer.asyncio.run_coroutine_threadsafe") as run_threadsafe:
+        server._notify_tools_changed()
+    run_threadsafe.assert_not_called()
+
+@pytest.mark.parametrize("error", [RuntimeError("loop closed"), AttributeError("boom")])
+def test_notify_tools_changed_logs_a_warning_when_clients_cannot_be_notified(server, error):
+    server._loop = Mock()
+    server.server = Mock()
+    with patch("decision_mcp_server.DecisionMCPServer.asyncio.run_coroutine_threadsafe", side_effect=error), \
+         patch.object(server.logger, "warning") as warning, \
+         patch.object(server.logger, "exception") as exception:
+        server._notify_tools_changed()  # must not raise
+    warning.assert_called_once()
+    assert "could not be notified" in warning.call_args.args[0]
+    exception.assert_not_called()
+
+def test_notify_tools_changed_logs_the_stacktrace_on_unexpected_error(server):
+    server._loop = Mock()
+    server.server = Mock()
+    with patch("decision_mcp_server.DecisionMCPServer.asyncio.run_coroutine_threadsafe", side_effect=ValueError("boom")), \
+         patch.object(server.logger, "warning") as warning, \
+         patch.object(server.logger, "exception") as exception:
+        server._notify_tools_changed()  # must not raise
+    exception.assert_called_once()
+    warning.assert_not_called()
+
+
+def test_refresh_tools_captures_timestamp_on_every_execution(server):
+    assert server._last_tools_refresh is None
+    with patch("decision_mcp_server.DecisionMCPServer.time.monotonic", side_effect=[100.0, 200.0]):
+        server.refresh_tools()
+        assert server._last_tools_refresh == 100.0
+        server.refresh_tools()
+        assert server._last_tools_refresh == 200.0
+
+def test_refresh_tools_does_not_notify_on_initial_fetch(server):
+    assert server._last_tools_refresh is None
+    with patch.object(server, "_notify_tools_changed") as notify:
+        server.refresh_tools()
+    notify.assert_not_called()
+    assert server._last_tools_refresh is not None
+
+def test_refresh_tools_allowed_returns_true_when_never_refreshed(server):
+    server.tools_refresh_min_interval = 60
+    assert server._last_tools_refresh is None
+    assert server.refresh_tools_allowed() is True
+
+def test_refresh_tools_allowed_returns_true_when_interval_is_zero(server):
+    server.tools_refresh_min_interval = 0
+    server._last_tools_refresh = 100.0
+    with patch("decision_mcp_server.DecisionMCPServer.time.monotonic", return_value=101.0):
+        assert server.refresh_tools_allowed() is True
+
+def test_refresh_tools_allowed_returns_false_when_interval_is_minus_one(server):
+    server.tools_refresh_min_interval = -1
+    server._last_tools_refresh = None
+    assert server.refresh_tools_allowed() is False
+    server._last_tools_refresh = 100.0
+    with patch("decision_mcp_server.DecisionMCPServer.time.monotonic", return_value=200.0):
+        assert server.refresh_tools_allowed() is False
+
+def test_refresh_tools_allowed_checks_elapsed_time(server):
+    server.tools_refresh_min_interval = 30
+    server._last_tools_refresh = 100.0
+    with patch("decision_mcp_server.DecisionMCPServer.time.monotonic", return_value=110.0):
+        assert server.refresh_tools_allowed() is False
+    with patch("decision_mcp_server.DecisionMCPServer.time.monotonic", return_value=130.0):
+        assert server.refresh_tools_allowed() is True
+    with patch("decision_mcp_server.DecisionMCPServer.time.monotonic", return_value=150.0):
+        assert server.refresh_tools_allowed() is True
+
+@pytest.mark.asyncio
+async def test_call_tool_refreshes_when_tool_unknown_and_refresh_allowed(server):
+    server.refresh_tools()
+    server.tools_refresh_min_interval = 60
+    with patch.object(server, "refresh_tools_allowed", return_value=True), \
+         patch.object(server, "refresh_tools") as mock_refresh:
+        with pytest.raises(Exception, match="Unknown tool: unknown_tool"):
+            await server.call_tool("unknown_tool", {}, Mock())
+        mock_refresh.assert_called_once()
+
+@pytest.mark.asyncio
+async def test_call_tool_skips_refresh_when_tool_unknown_and_refresh_not_allowed(server):
+    server.refresh_tools()
+    server.tools_refresh_min_interval = 60
+    with patch.object(server, "refresh_tools_allowed", return_value=False), \
+         patch.object(server, "refresh_tools") as mock_refresh:
+        with pytest.raises(Exception, match="Unknown tool: unknown_tool"):
+            await server.call_tool("unknown_tool", {}, Mock())
+        mock_refresh.assert_not_called()
+
+@pytest.mark.asyncio
+async def test_call_tool_unknown_tool_skips_refresh_when_min_interval_minus_one(server):
+    server.refresh_tools()
+    server.tools_refresh_min_interval = -1
+    with patch.object(server, "refresh_tools") as mock_refresh:
+        with pytest.raises(Exception, match="Unknown tool: unknown_tool"):
+            await server.call_tool("unknown_tool", {}, Mock())
+        mock_refresh.assert_not_called()
+
+def test_tools_refresh_loop_waits_the_period_before_the_first_refresh(server):
+    server.tools_refresh_period = 300
+    events = []
+
+    def fake_wait(delay):
+        events.append(("wait", delay))
+        return len(events) > 1  # stop at the second wait
+
+    with patch.object(server, "refresh_tools", side_effect=lambda: events.append("refresh")), \
+         patch.object(server._refresh_stop, "wait", side_effect=fake_wait):
+        server._tools_refresh_loop()
+
+    assert events == [("wait", 300.0), "refresh", ("wait", 300.0)]
+
+def test_tools_refresh_loop_after_a_failure(server):
+    server.tools_refresh_period = 600
+    waits = []
+
+    def fake_wait(delay):
+        waits.append(delay)
+        return len(waits) == 3
+
+    with patch.object(server, "refresh_tools", side_effect=Exception("down")) as refresh, \
+         patch.object(server._refresh_stop, "wait", side_effect=fake_wait):
+        server._tools_refresh_loop()
+
+    assert waits == [600.0, 600.0, 600.0]
+    assert refresh.call_count == 2
+
+def test_tools_refresh_loop_waits_300s_first_when_running_in_pod(server, monkeypatch):
+    server.tools_refresh_period = 60
+    server.transport = "streamable-http"
+    waits = []
+
+    def fake_wait(delay):
+        waits.append(delay)
+        return len(waits) == 3
+
+    monkeypatch.setenv("RUNNING_IN_POD", "True")
+    with patch.object(server, "refresh_tools", side_effect=[None, Exception("down")]), \
+         patch.object(server._refresh_stop, "wait", side_effect=fake_wait):
+        server._tools_refresh_loop()
+
+    assert waits == [300.0, 60.0, 60.0]
+
+@pytest.mark.parametrize("env, transport, expected", [
+    ("True", "streamable-http", True),
+    ("True", "stdio", False),
+    ("True", "sse", False),
+    ("False", "streamable-http", False),
+    (None, "streamable-http", False),
+])
+def test_is_running_in_pod(server, env, transport, expected, monkeypatch):
+    server.transport = transport
+    if env is None:
+        monkeypatch.delenv("RUNNING_IN_POD", raising=False)
+    else:
+        monkeypatch.setenv("RUNNING_IN_POD", env)
+    assert server.is_running_in_pod() is expected
+
+def test_start_tools_refresh_disabled_when_period_is_zero(server):
+    server.tools_refresh_period = 0
+    with patch("decision_mcp_server.DecisionMCPServer.threading.Thread") as thread:
+        server.start_tools_refresh()
+    thread.assert_not_called()
+
+def test_start_tools_refresh_starts_a_daemon_thread(server):
+    server.tools_refresh_period = 60
+    with patch("decision_mcp_server.DecisionMCPServer.threading.Thread") as thread:
+        server.start_tools_refresh()
+    assert thread.call_args.kwargs["daemon"] is True
+    thread.return_value.start.assert_called_once()
+
+def test_tools_refresh_period_argument(monkeypatch):
+    monkeypatch.setattr("sys.argv", ["prog"])
+    monkeypatch.delenv("TOOLS_REFRESH_PERIOD", raising=False)
+    assert parse_arguments().tools_refresh_period == 300
+
+    monkeypatch.setenv("TOOLS_REFRESH_PERIOD", "42")
+    assert parse_arguments().tools_refresh_period == 42
+
+    monkeypatch.setattr("sys.argv", ["prog", "--tools-refresh-period", "0"])
+    assert parse_arguments().tools_refresh_period == 0
+
+def test_tools_refresh_min_interval_argument(monkeypatch):
+    monkeypatch.setattr("sys.argv", ["prog"])
+    monkeypatch.delenv("TOOLS_REFRESH_MIN_INTERVAL", raising=False)
+    assert parse_arguments().tools_refresh_min_interval == 20
+
+    monkeypatch.setenv("TOOLS_REFRESH_MIN_INTERVAL", "-1")
+    assert parse_arguments().tools_refresh_min_interval == -1
+
+    monkeypatch.setenv("TOOLS_REFRESH_MIN_INTERVAL", "15")
+    assert parse_arguments().tools_refresh_min_interval == 15
+
+    monkeypatch.setattr("sys.argv", ["prog", "--tools-refresh-min-interval", "30"])
+    assert parse_arguments().tools_refresh_min_interval == 30
+
+    monkeypatch.setattr("sys.argv", ["prog", "--tools-refresh-min-interval", "-1"])
+    assert parse_arguments().tools_refresh_min_interval == -1
+
+@pytest.mark.parametrize("name", ["PORT", "TRACE_MAXSIZE", "TOOLS_REFRESH_PERIOD", "TOOLS_REFRESH_MIN_INTERVAL"])
+def test_integer_environment_variable_with_invalid_value_is_a_usage_error(monkeypatch, capsys, name):
+    monkeypatch.setattr("sys.argv", ["prog"])
+    monkeypatch.setenv(name, "abc")
+    with pytest.raises(SystemExit) as exc_info:
+        parse_arguments()
+    assert exc_info.value.code == 2
+    assert f"environment variable {name} must be an integer, got 'abc'" in capsys.readouterr().err
 
 @pytest.mark.asyncio
 async def test_call_tool_success(server, mock_manager):
@@ -763,6 +1060,7 @@ def test_server_start_with_streamable_http_transport():
         mock_fastmcp_class.assert_called_once_with(
             name="ibm-odm-decision-mcp-server",
             instructions=INSTRUCTIONS,
+            lifespan=server._lifespan,
         )
         
         # Verify run was called with streamable-http transport
@@ -818,6 +1116,7 @@ def test_server_start_with_sse_transport():
         mock_fastmcp_class.assert_called_once_with(
             name="ibm-odm-decision-mcp-server",
             instructions=INSTRUCTIONS,
+            lifespan=server._lifespan,
         )
         
         # Verify run was called with sse transport
@@ -1076,6 +1375,7 @@ def test_main_running_in_pod_streamable_http():
             mock_create_creds.return_value = (Mock(), Mock())
             mock_server_instance = mock_server_class.return_value
             mock_server_instance.start = Mock()
+            mock_server_instance.is_running_in_pod.return_value = True
             
             # Execute main
             main()
@@ -1139,6 +1439,7 @@ def test_main_not_running_in_pod():
             mock_create_creds.return_value = (Mock(), Mock())
             mock_server_instance = mock_server_class.return_value
             mock_server_instance.start = Mock()
+            mock_server_instance.is_running_in_pod.return_value = False
             
             # Execute main
             main()
@@ -1166,6 +1467,7 @@ def test_main_passes_https_arguments():
         mock_create_creds.return_value = (Mock(), Mock())
         mock_server_instance = mock_server_class.return_value
         mock_server_instance.start = Mock()
+        mock_server_instance.is_running_in_pod.return_value = False
         
         main()
         
@@ -1254,6 +1556,7 @@ def test_main_passes_startup_args():
         mock_create_creds.return_value = (Mock(), Mock())
         mock_server_instance = mock_server_class.return_value
         mock_server_instance.start = Mock()
+        mock_server_instance.is_running_in_pod.return_value = False
         
         main()
         

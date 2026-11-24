@@ -12,9 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import itertools
 import logging
 import json
-from collections import defaultdict
+import re
+from collections import Counter, defaultdict
 import requests
 import jsonref
 from .DecisionServiceDescription import DecisionServiceDescription
@@ -175,16 +177,16 @@ class DecisionServerManager:
         Returns:
             dict: The input schema of the ruleset.
         """
+        error = ""
+        url = self.runtime_credentials.odm_url + '/rest/' + ruleset["id"] + '/openapi?format=json'
         try:
             # Make the GET request with headers
-            self.logger.info("Retrieve OpenAPI schema at "+self.runtime_credentials.odm_url+'/rest/'+ruleset["id"]+ '/openapi')
             session = self.runtime_credentials.get_session()
-            response = session.get(self.runtime_credentials.odm_url+'/rest/'+ruleset["id"]+ '/openapi?format=json', headers=session.headers, verify=self.runtime_credentials.cacert)
+            response = session.get(url, headers=session.headers, verify=self.runtime_credentials.cacert)
+            self.logger.debug(f"{url} {response.status_code} {len(response.text)}")
 
             # Check if the request was successful
             if response.status_code == 200:
-                self.logger.info("Request successful!")
-
                 # Resolve $ref references
                 jsonopenApiData = jsonref.JsonRef.replace_refs(json.loads(response.text))
 
@@ -196,19 +198,18 @@ class DecisionServerManager:
                 # Convert to plain JSON-serializable dict
                 return self.to_plain_dict(inputParameterSchema)
             else:
-                self.logger.error("Request failed with status code: %s", response.status_code)
-                self.logger.error("Response: %s", response.text)
-                raise ToolError(f"{response.text} from {self.runtime_credentials.odm_url}/rest/{ruleset["id"]}/openapi")
+                error = f"Request to {url} failed (HTTP code {response.status_code}) - Response: {response.text}"
 
         except requests.exceptions.RequestException as e:
-            self.logger.error("An error occurred: %s", e)
-            raise ToolError(f"{str(e)} from {self.runtime_credentials.odm_url}/rest/{ruleset["id"]}/openapi")
+            error = f"Request to {url} failed: {str(e)}"
         except json.JSONDecodeError as e:
-            self.logger.error("Failed to decode JSON response.")
-            raise ToolError(f"{str(e)} - Error parsing response from {self.runtime_credentials.odm_url}/rest/{ruleset["id"]}/openapi")
+            error = f"Failed to decode the JSON response from {url}"
         finally:
             self.runtime_credentials.cleanup()
         
+        if error:
+            self.logger.error(error)
+            raise ToolError(error)
 
     def get_input_schema(self, ruleset):
 
@@ -225,29 +226,87 @@ class DecisionServerManager:
         return self.get_ruleset_openapi(ruleset)
     
 
+    MAX_TOOL_NAME_LENGTH = 64
+    _INVALID_TOOL_NAME_CHARS = re.compile(r"[^A-Za-z0-9_.-]")
 
+    @classmethod
+    def _sanitize_tool_name(cls, name: str) -> str:
+        """Replaces each character not allowed in a tool name (ASCII letters, digits, `_`, `-`, `.`) by an underscore."""
+        return cls._INVALID_TOOL_NAME_CHARS.sub("_", name)
 
-    def generate_tools_format(self, filtered_rulesets)-> list[DecisionServiceDescription]:
+    @classmethod
+    def _base_tool_name(cls, ruleset: dict) -> str:
+        """Computes the tool name of a ruleset, before any de-duplication.
+
+        Returns:
+            The `agent.name` property if defined or the displayName otherwise, with the characters not allowed in a tool name
+            replaced by underscores, and truncated to 64 characters. The case is preserved.
+        """
+        name = next((prop["value"] for prop in ruleset["properties"] if prop["id"] == "agent.name"), ruleset["displayName"])
+        return cls._sanitize_tool_name(name)[:cls.MAX_TOOL_NAME_LENGTH]
+
+    @classmethod
+    def _unique_tool_name(cls, base_name: str, ruleset: dict, used_names: set[str]) -> str:
+        """Builds a tool name `<name>_<n>_<ruleapp>_<ruleset>` that is not in `used_names`.
+
+        The number is placed right after the name, so that the names stay different if the tail is dropped.
+        If the result exceeds 64 characters, `<ruleapp>_<ruleset>` is dropped altogether, and `<name>` is shortened if needed.
+        The number is never shortened.
+
+        Args:
+            base_name: The tool name shared by several rulesets.
+            ruleset: The ruleset metadata, whose `id` is `<ruleapp>/<version>/<ruleset>/<version>`.
+            used_names: The tool names already taken.
+
+        Returns:
+            A tool name that is not in `used_names`, with `n` starting at 1.
+        """
+        parts = ruleset["id"].split("/")
+        ruleapp_name, ruleset_name = (cls._sanitize_tool_name(part) for part in (parts[0], parts[2]))
+
+        def candidate(n: int) -> str:
+            number = f"_{n}"
+            tail = f"_{ruleapp_name}_{ruleset_name}"
+            if len(base_name) + len(number) + len(tail) <= cls.MAX_TOOL_NAME_LENGTH:
+                return f"{base_name}{number}{tail}"
+            return f"{base_name[:cls.MAX_TOOL_NAME_LENGTH - len(number)]}{number}"
+
+        return next(name for n in itertools.count(1) if (name := candidate(n)) not in used_names)
+
+    def generate_tools_format(self, filtered_rulesets) -> dict[str, DecisionServiceDescription]:
         """
         :no-index:
-        Generates a formatted list of rulesets in the tools format from the filtered rulesets.
+        Generates the rulesets in the tools format from the filtered rulesets.
+
+        The tool names keep their case and only contain ASCII letters, digits, `_`, `-` and `.`
+        (other characters are replaced by `_`), with at most 64 characters.
+        When several rulesets have the same tool name, all of them are renamed
+        `<name>_<n>_<ruleapp>_<ruleset>` to keep the tool names unique, and a warning is logged.
 
         Args:
             filtered_rulesets (dict): A dictionary of filtered rulesets.
 
         Returns:
-            list: A list of formatted rulesets.
+            dict: The decision service descriptions, with the tool name as key, sorted by tool name.
         """
-        formatted_tools = []
+        rulesets = list(filtered_rulesets.values())
+        base_names = [self._base_tool_name(ruleset) for ruleset in rulesets]
+        name_counts = Counter(base_names)
+        used_names = {name for name, count in name_counts.items() if count == 1}
 
-        for ruleset in filtered_rulesets.values():
+        formatted_tools = {}
+        for ruleset, base_name in zip(rulesets, base_names):
+            tool_name = base_name
+            if name_counts[base_name] > 1:
+                tool_name = self._unique_tool_name(base_name, ruleset, used_names)
+                self.logger.warning("The tool name '%s' is used by several rulesets, '%s' is renamed '%s'",
+                                    base_name, ruleset["id"], tool_name)
+            used_names.add(tool_name)
+
             input_schema = self.get_input_schema(ruleset)
-            toolName = next((prop["value"] for prop in ruleset["properties"] if prop["id"] == "agent.name"), ruleset["displayName"]).replace(" ", "_").lower()
-            toolDescription = next((prop["value"] for prop in ruleset["properties"] if prop["id"] == "agent.description"), ruleset["description"])
-             # Define a class to hold the formatted ruleset data
-            formatted_ruleset = DecisionServiceDescription(toolName, ruleset, toolDescription, input_schema)
-            formatted_tools.append(formatted_ruleset)
-        return formatted_tools
+            tool_description = next((prop["value"] for prop in ruleset["properties"] if prop["id"] == "agent.description"), ruleset["description"])
+            formatted_tools[tool_name] = DecisionServiceDescription(tool_name, ruleset, tool_description, input_schema)
+        return dict(sorted(formatted_tools.items()))
 
     def fetch_rulesets(self):
         """
@@ -257,16 +316,16 @@ class DecisionServerManager:
         Returns:
             dict: A dictionary containing the highest version rulesets, or None if the request fails.
         """
+        error = ""
+        url = self.console_credentials.odm_url + '/api/v1/ruleapps'
         try:
             # Make the GET request with headers
-            self.logger.info(self.console_credentials.odm_url+'/api/v1/ruleapps')
             session = self.console_credentials.get_session()
-            response = session.get(self.console_credentials.odm_url+'/api/v1/ruleapps', headers=session.headers, verify=self.console_credentials.cacert)
+            response = session.get(url, headers=session.headers, verify=self.console_credentials.cacert)
+            self.logger.debug(f"{url} {response.status_code} {len(response.text)}")
 
             # Check if the request was successful
             if response.status_code == 200:
-                self.logger.info("Request successful!")
-
                 # Parse and display the JSON response
                 data = response.json()
                 # Extract the highest version rulesets
@@ -274,18 +333,19 @@ class DecisionServerManager:
 
                 return highest_version_rulesets
             else:
-                self.logger.error("Request failed with status code: %s", response.status_code)
-                self.logger.error("Response: %s", response.text)
-                raise ToolError(f"Unexpected response {response.status_code} from {self.console_credentials.odm_url}/api/v1/ruleapps")
+                error = f"Request to {url} failed (HTTP code {response.status_code}) - Response: {response.text}"
 
         except requests.exceptions.RequestException as e:
-            self.logger.error("An error occurred: %s", e)
-            raise ToolError(f"Unexpected response {str(e)} while fetching {self.console_credentials.odm_url}/api/v1/ruleapps")
+            error = f"Request to {url} failed: {str(e)}"
         except json.JSONDecodeError:
-            self.logger.error("Failed to decode JSON response.")
-            raise ToolError(f"Failed to decode the JSON response from {self.console_credentials.odm_url}/api/v1/ruleapps")
+            error = f"Failed to decode the JSON response from {url}"
         finally:
             self.console_credentials.cleanup()
+        
+        if error:
+            self.logger.error(error)
+            raise ToolError(error)
+
 
     def invokeDecisionService(self, rulesetPath, decisionInputs, trace=True, runtime_credentials=None):
         """
@@ -305,6 +365,7 @@ class DecisionServerManager:
         """
         # Use dedicated credentials if provided, otherwise fall back to the default runtime credentials
         effective_credentials = runtime_credentials if runtime_credentials is not None else self.runtime_credentials
+        url = effective_credentials.odm_url + '/rest' + rulesetPath
 
         params = {**decisionInputs}
         if trace:
@@ -312,8 +373,9 @@ class DecisionServerManager:
 
         try:
             session = effective_credentials.get_session()
-            response = session.post(effective_credentials.odm_url+'/rest'+rulesetPath, headers=session.headers,
-                                json=params)
+            response = session.post(url, headers=session.headers, json=params)
+            text_len = len(response.text) if isinstance(response.text, (str, bytes)) else 0
+            self.logger.debug(f"{url} {response.status_code} {text_len}")
         finally:
             effective_credentials.cleanup()
 
@@ -321,8 +383,8 @@ class DecisionServerManager:
         if response.status_code == 200:
             return response.json()
         elif response.status_code == 404:
-            raise ToolError(f"Unknown tool: {name}")
+            raise ToolError(f"Ruleset not found. The list of tools needs to be updated.")
         else:
             err = response.content.decode('utf-8')
-            self.logger.error(f"Request error, status: {response.status_code}, error: {err}")
-            raise Exception(err)
+            self.logger.error(f"Request to {url} failed, status: {response.status_code}, error: {err}")
+            raise ToolError(err)

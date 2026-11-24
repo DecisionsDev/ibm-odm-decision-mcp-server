@@ -52,7 +52,7 @@ def _build(trace_enable=False, traces_dir=None):
     )
     manager = Mock()
     manager.fetch_rulesets.return_value = []
-    manager.generate_tools_format.return_value = [_description()]
+    manager.generate_tools_format.return_value = {TOOL_NAME: _description()}
     decision_server.manager = manager
 
     # Same wiring as DecisionMCPServer.start()

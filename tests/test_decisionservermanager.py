@@ -240,14 +240,14 @@ def test_agent_name_handling():
         # Call generate_tools_format
         result = manager.generate_tools_format(rulesets)
         
-        # Verify both tools were formatted correctly
-        assert len(result) == 2
+        # Verify both tools were formatted correctly, keyed by tool name and sorted by key
+        assert list(result) == ["CustomToolName", "Display_Name_With_Spaces"]
         
-        # First ruleset should use displayName (converted to lowercase with underscores)
-        assert result[0].tool_name == "display_name_with_spaces"
+        # First ruleset should use displayName (spaces replaced by underscores, case preserved)
+        assert result["Display_Name_With_Spaces"].tool_name == "Display_Name_With_Spaces"
         
         # Second ruleset should use the explicit agent.name
-        assert result[1].tool_name == "customtoolname"
+        assert result["CustomToolName"].tool_name == "CustomToolName"
         
     finally:
         # Restore the original method
@@ -315,29 +315,134 @@ def test_tools_name_and_description_handling():
         # Call generate_tools_format
         result = manager.generate_tools_format(rulesets)
         
-        # Verify all tools were formatted correctly
-        assert len(result) == 3
+        # Verify all tools were formatted correctly, keyed by tool name and sorted by key
+        assert list(result) == ["CustomToolName", "Display_Name_With_Spaces", "ThirdTool"]
         
         # First ruleset should use displayName and default description
-        assert result[0].tool_name == "display_name_with_spaces"
-        assert result[0].description == "Default description"
+        assert result["Display_Name_With_Spaces"].tool_name == "Display_Name_With_Spaces"
+        assert result["Display_Name_With_Spaces"].description == "Default description"
         
         # Second ruleset should use explicit values for both name and description
-        assert result[1].tool_name == "customtoolname"  # Note: also tests lowercase conversion
-        assert result[1].description == "Custom description"
+        assert result["CustomToolName"].tool_name == "CustomToolName"  # Note: the case is preserved
+        assert result["CustomToolName"].description == "Custom description"
         
         # Third ruleset should use explicit name but default description
-        assert result[2].tool_name == "thirdtool"  # Note: also tests lowercase conversion
-        assert result[2].description == "Another default description"
+        assert result["ThirdTool"].tool_name == "ThirdTool"  # Note: the case is preserved
+        assert result["ThirdTool"].description == "Another default description"
         
         # Verify rulesetPath is set correctly
-        assert result[0].rulesetPath == "/test/1.0/ruleset1"
-        assert result[1].rulesetPath == "/test/1.0/ruleset2"
-        assert result[2].rulesetPath == "/test/1.0/ruleset3"
+        assert result["Display_Name_With_Spaces"].rulesetPath == "/test/1.0/ruleset1"
+        assert result["CustomToolName"].rulesetPath == "/test/1.0/ruleset2"
+        assert result["ThirdTool"].rulesetPath == "/test/1.0/ruleset3"
         
     finally:
         # Restore the original method
         manager.get_input_schema = original_get_input_schema
+
+
+def _manager_with_mocked_schema() -> DecisionServerManager:
+    credentials = Credentials(odm_url='http://localhost:8885/res', username='mock_user', password='mock_password_placeholder')
+    manager = DecisionServerManager(console_credentials=credentials, runtime_credentials=credentials)
+    manager.get_input_schema = lambda ruleset: {"type": "object", "properties": {}}
+    return manager
+
+def _ruleset(ruleset_id: str, name: str) -> dict:
+    return {
+        "id": ruleset_id,
+        "displayName": name,
+        "description": "description",
+        "properties": [{"id": "agent.enabled", "value": "true"}],
+    }
+
+def test_generate_tools_format_renames_duplicate_tool_names(caplog):
+    """All the rulesets sharing a tool name are renamed <name>_<n>_<ruleapp>_<ruleset>, and a warning is logged."""
+    rulesets = {
+        "b": _ruleset("Loan App/1.0/Validation/1.0", "Check"),
+        "a": _ruleset("insurance/2.0/eligibility/1.0", "Check"),
+        "c": _ruleset("other/1.0/unique/1.0", "Unique"),
+    }
+
+    with caplog.at_level("WARNING"):
+        result = _manager_with_mocked_schema().generate_tools_format(rulesets)
+
+    assert list(result) == ["Check_1_Loan_App_Validation", "Check_1_insurance_eligibility", "Unique"]
+    assert result["Check_1_Loan_App_Validation"].tool_name == "Check_1_Loan_App_Validation"
+    assert result["Check_1_Loan_App_Validation"].rulesetPath == "/Loan App/1.0/Validation/1.0"
+    assert result["Check_1_insurance_eligibility"].rulesetPath == "/insurance/2.0/eligibility/1.0"
+    assert "Check_1_Loan_App_Validation" in caplog.text
+    assert "Check_1_insurance_eligibility" in caplog.text
+
+def test_generate_tools_format_tool_names_are_case_sensitive():
+    """Names differing only by case are distinct tools: they are not renamed."""
+    rulesets = {"a": _ruleset("app/1.0/rs1/1.0", "Check"), "b": _ruleset("app/1.0/rs2/1.0", "check")}
+
+    result = _manager_with_mocked_schema().generate_tools_format(rulesets)
+
+    assert list(result) == ["Check", "check"]
+
+def test_generate_tools_format_replaces_invalid_characters():
+    """Characters other than ASCII letters, digits, '_', '-' and '.' are replaced by '_'."""
+    rulesets = {"a": _ruleset("app/1.0/rs/1.0", "Loan v1.0-beta: é/ü")}
+
+    result = _manager_with_mocked_schema().generate_tools_format(rulesets)
+
+    assert list(result) == ["Loan_v1.0-beta_____"]
+
+def test_generate_tools_format_limits_tool_names_to_64_characters():
+    """When the name alone fills the 64 characters, the tail is dropped and the name is shortened for the number."""
+    rulesets = {
+        "a": _ruleset("app/1.0/rs1/1.0", "x" * 200),
+        "b": _ruleset("app/1.0/rs2/1.0", "x" * 200),
+    }
+
+    result = _manager_with_mocked_schema().generate_tools_format(rulesets)
+
+    assert all(len(name) <= 64 for name in result)
+    assert sorted(result) == [f"{'x' * 62}_1", f"{'x' * 62}_2"]
+
+def test_generate_tools_format_drops_tail_when_it_does_not_fit():
+    """The <ruleapp>_<ruleset> tail is dropped altogether if it does not fit in 64 characters."""
+    rulesets = {
+        "a": _ruleset(f"{'a' * 40}/1.0/{'b' * 40}/1.0", "dup"),
+        "b": _ruleset(f"{'c' * 40}/1.0/{'b' * 40}/1.0", "dup"),
+    }
+
+    result = _manager_with_mocked_schema().generate_tools_format(rulesets)
+
+    assert sorted(result) == ["dup_1", "dup_2"]
+
+def test_generate_tools_format_truncates_unique_tool_names_to_64_characters():
+    rulesets = {"a": _ruleset("app/1.0/rs/1.0", "y" * 100)}
+
+    result = _manager_with_mocked_schema().generate_tools_format(rulesets)
+
+    assert list(result) == ["y" * 64]
+
+def test_generate_tools_format_increments_suffix_when_renamed_tool_is_taken():
+    """The number is incremented when <name>_1_<ruleapp>_<ruleset> collides with another tool name."""
+    rulesets = {
+        "first": _ruleset("app/1.0/rs/1.0", "dup"),
+        "second": _ruleset("app/2.0/rs/1.0", "dup"),
+        "taken": _ruleset("app/3.0/other/1.0", "dup_1_app_rs"),
+    }
+
+    result = _manager_with_mocked_schema().generate_tools_format(rulesets)
+
+    assert list(result) == ["dup_1_app_rs", "dup_2_app_rs", "dup_3_app_rs"]
+    assert result["dup_1_app_rs"].rulesetPath == "/app/3.0/other/1.0"
+    assert {result["dup_2_app_rs"].rulesetPath, result["dup_3_app_rs"].rulesetPath} == {
+        "/app/1.0/rs/1.0", "/app/2.0/rs/1.0"
+    }
+
+def test_generate_tools_format_does_not_warn_without_duplicates(caplog):
+    rulesets = {"a": _ruleset("app/1.0/rs1/1.0", "one"), "b": _ruleset("app/1.0/rs2/1.0", "two")}
+
+    with caplog.at_level("WARNING"):
+        _manager_with_mocked_schema().generate_tools_format(rulesets)
+
+    assert "is used by several rulesets" not in caplog.text
+
+
 
 def test_extract_highest_version_rulesets_agent_enabled():
     """Test that only rulesets with agent.enabled=true are included."""
