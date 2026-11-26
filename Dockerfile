@@ -1,4 +1,4 @@
-ARG PYTHON_VERSION=3.14
+ARG PYTHON_VERSION=3.15
 
 FROM ghcr.io/astral-sh/uv:bookworm-slim AS builder
 ENV UV_COMPILE_BYTECODE=1
