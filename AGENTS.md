@@ -10,7 +10,7 @@ It is compliant to the MCP SDK v2.
 ---
 ## Project Setup and Management
 
-- Python version: 3.13 or 3.14. Don't use newer syntax.
+- Python version: 3.13, 3.14 or 3.15. Don't use newer syntax.
 - Dependency management: `uv` and `pyproject.toml`. Never use `pip` or a `requirements.txt` file.
 - Add a dependency with `uv add <package>`. Never use `uv pip` for dependencies.
 - Branch from `main` as `feature/<name>` and use Conventional Commits.
